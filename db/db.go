@@ -33,6 +33,10 @@ type TableInfo struct {
 	PrimaryKey sql.NullString `db:"primary_key"`
 }
 
+type DBConfig struct {
+	URL string
+}
+
 func New(dataBaseURL string) (*Postgres, error) {
 	pg := &Postgres{}
 	var err error

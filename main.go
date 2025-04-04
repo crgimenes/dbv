@@ -4,16 +4,17 @@ import (
 	"fmt"
 	"log"
 	"os"
-
-	tea "github.com/charmbracelet/bubbletea"
+	"path/filepath"
 
 	"dbv/db"
 	"dbv/lua"
+
+	tea "github.com/charmbracelet/bubbletea"
+	luaState "github.com/yuin/gopher-lua"
 )
 
 const (
-	initFile       = "init.lua"
-	recordsPerPage = 100
+	recordsPerPage = 1000
 )
 
 type errMsg error
@@ -33,27 +34,80 @@ func fileExists(name string) bool {
 	return true
 }
 
+func getInitLuaPath() string {
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatal("Failed to get home directory:", err)
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	return filepath.Join(configHome, "dbv", "init.lua")
+}
+
 func runLuaFile(name string) {
+	// Create a new Lua state.
 	L := lua.New()
 	defer L.Close()
 
+	// Read the Lua file.
 	b, err := os.ReadFile(name)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	L.SetGlobal("DataBaseURL", "")
+	// Pre-declare DataBases as an empty table.
+	emptyTable := L.GetState().NewTable()
+	L.SetGlobalTable("DataBases", emptyTable)
+
+	// Execute the Lua code that should populate DataBases.
 	if err := L.DoString(string(b)); err != nil {
 		log.Fatal(err)
 	}
 
-	dataBaseURL := L.MustGetString("DataBaseURL")
-	if dataBaseURL != "" {
-		db.Storage, err = db.New(dataBaseURL)
+	// Retrieve the DataBases table.
+	table := L.GetGlobalTable("DataBases")
+	if table == nil {
+		log.Fatal("DataBases is not a table")
+	}
+
+	// Convert the Lua table to a slice of db.DBConfig.
+	var configs []db.DBConfig
+	table.ForEach(func(_, value luaState.LValue) {
+		confTbl, ok := value.(*luaState.LTable)
+		if !ok {
+			return
+		}
+		cfg := db.DBConfig{
+			URL: confTbl.RawGetString("url").String(),
+		}
+
+		// Get port as number.
+		//if port, ok := confTbl.RawGetString("port").(luaState.LNumber); ok {
+		//	cfg.Port = int(port)
+		//}
+		configs = append(configs, cfg)
+	})
+
+	// print the configs
+	for _, cfg := range configs {
+		fmt.Printf("DBConfig: %+v\n", cfg)
+	}
+
+	// if there is only one database, use it
+	if len(configs) == 1 {
+		db.Storage, err = db.New(configs[0].URL)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
+
+	// if there are multiple databases, show a list and let the user choose one
+	if len(configs) > 1 {
+		// TODO: show a list of databases and let the user choose one
+	}
+
 }
 
 type screen int
@@ -178,7 +232,12 @@ func (m rootModel) View() string {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Llongfile)
 
+	initFile := getInitLuaPath()
 	if fileExists(initFile) {
+		runLuaFile(initFile)
+	} else {
+		// load local config
+		initFile = "./init.lua"
 		runLuaFile(initFile)
 	}
 

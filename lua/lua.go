@@ -216,3 +216,21 @@ func (l *Lua) MustGetMap(vGlobal string) map[string]string {
 func (l *Lua) NewTable() *lua.LTable {
 	return l.ls.NewTable()
 }
+
+// GetGlobalTable returns the global variable as a *lua.LTable.
+func (l *Lua) GetGlobalTable(name string) *lua.LTable {
+	t := l.ls.GetGlobal(name)
+	if tbl, ok := t.(*lua.LTable); ok {
+		return tbl
+	}
+	return nil
+}
+
+// SetGlobalTable sets a global variable with a given *lua.LTable.
+func (l *Lua) SetGlobalTable(name string, tbl *lua.LTable) {
+	l.ls.SetGlobal(name, tbl)
+}
+
+func (l *Lua) GetState() *lua.LState {
+	return l.ls
+}
