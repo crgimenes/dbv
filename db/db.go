@@ -34,7 +34,8 @@ type TableInfo struct {
 }
 
 type DBConfig struct {
-	URL string
+	Title string
+	URL   string
 }
 
 func New(dataBaseURL string) (*Postgres, error) {

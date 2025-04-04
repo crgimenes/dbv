@@ -19,6 +19,12 @@ const (
 
 type errMsg error
 
+type menuModel struct {
+	choices  []db.DBConfig
+	selected int
+	chosen   int
+}
+
 var (
 	GitTag = "v0.0.0"
 )
@@ -44,6 +50,57 @@ func getInitLuaPath() string {
 		configHome = filepath.Join(home, ".config")
 	}
 	return filepath.Join(configHome, "dbv", "init.lua")
+}
+
+func (m menuModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "up", "k":
+			if m.selected > 0 {
+				m.selected--
+			}
+		case "down", "j":
+			if m.selected < len(m.choices)-1 {
+				m.selected++
+			}
+		case "enter":
+			m.chosen = m.selected
+			return m, tea.Quit
+		case "q", "esc":
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m menuModel) View() string {
+	s := statusBarStyle.Render("Select a database") + "\n\n"
+	for i, cfg := range m.choices {
+		if m.selected == i {
+			title := cfg.Title
+			if title == "" {
+				title = cfg.URL
+			}
+			s += fmt.Sprintf("> %d ", i+1) +
+				selectedCellStyle.Render(fmt.Sprintf("%s", title)) + "\n"
+		} else {
+			title := cfg.Title
+			if title == "" {
+				title = cfg.URL
+			}
+			s += fmt.Sprintf("  %d ", i+1) +
+				statusBarStyle.Render(fmt.Sprintf("%s", title)) + "\n"
+		}
+	}
+	s += "\n" + statusBarStyle.Render(
+		"Enter to select, q or esc to quit",
+	)
+	return s
 }
 
 func runLuaFile(name string) {
@@ -79,21 +136,35 @@ func runLuaFile(name string) {
 		if !ok {
 			return
 		}
-		cfg := db.DBConfig{
-			URL: confTbl.RawGetString("url").String(),
+
+		var (
+			title luaState.LValue
+			url   luaState.LValue
+		)
+
+		title = confTbl.RawGetString("title")
+		if title == luaState.LNil {
+			title = confTbl.RawGetString("url")
 		}
 
-		// Get port as number.
-		//if port, ok := confTbl.RawGetString("port").(luaState.LNumber); ok {
-		//	cfg.Port = int(port)
-		//}
+		url = confTbl.RawGetString("url")
+		if url == luaState.LNil {
+			// if url is nil, error message
+			log.Fatalf("url is nil for table: %q", confTbl)
+		}
+
+		cfg := db.DBConfig{
+			URL:   url.String(),
+			Title: title.String(),
+		}
+
 		configs = append(configs, cfg)
 	})
 
 	// print the configs
-	for _, cfg := range configs {
-		fmt.Printf("DBConfig: %+v\n", cfg)
-	}
+	//for _, cfg := range configs {
+	//	fmt.Printf("DBConfig: %+v\n", cfg)
+	//}
 
 	// if there is only one database, use it
 	if len(configs) == 1 {
@@ -103,9 +174,22 @@ func runLuaFile(name string) {
 		}
 	}
 
-	// if there are multiple databases, show a list and let the user choose one
+	// if there are multiple databases, show a menu to select one
 	if len(configs) > 1 {
-		// TODO: show a list of databases and let the user choose one
+		menu := menuModel{choices: configs, selected: 0, chosen: -1}
+		finalModel, err := tea.NewProgram(menu).Run()
+		if err != nil {
+			log.Fatal(err)
+		}
+		chosenMenu := finalModel.(menuModel)
+		if chosenMenu.chosen == -1 {
+			os.Exit(0)
+		}
+
+		db.Storage, err = db.New(configs[chosenMenu.chosen].URL)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 }
