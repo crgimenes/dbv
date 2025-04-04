@@ -59,6 +59,22 @@ func (m menuModel) Init() tea.Cmd {
 func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// select a database by number
+		if len(msg.String()) == 1 {
+			r := msg.String()[0]
+			if r >= '0' && r <= '9' {
+				var index int
+				if r == '0' {
+					index = 9
+				} else {
+					index = int(r - '1')
+				}
+				if index < len(m.choices) && index < 10 {
+					m.chosen = index
+					return m, tea.Quit
+				}
+			}
+		}
 		switch msg.String() {
 		case "up", "k":
 			if m.selected > 0 {
