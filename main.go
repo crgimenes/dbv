@@ -26,7 +26,8 @@ type menuModel struct {
 }
 
 var (
-	GitTag = "v0.0.0"
+	GitTag  = "v0.0.0"
+	DBTitle = "-"
 )
 
 func fileExists(name string) bool {
@@ -184,6 +185,11 @@ func runLuaFile(name string) {
 
 	// if there is only one database, use it
 	if len(configs) == 1 {
+		DBTitle = configs[0].Title
+		if DBTitle == "" {
+			DBTitle = configs[0].URL
+		}
+
 		db.Storage, err = db.New(configs[0].URL)
 		if err != nil {
 			log.Fatal(err)
@@ -200,6 +206,11 @@ func runLuaFile(name string) {
 		chosenMenu := finalModel.(menuModel)
 		if chosenMenu.chosen == -1 {
 			os.Exit(0)
+		}
+
+		DBTitle = configs[chosenMenu.chosen].Title
+		if DBTitle == "" {
+			DBTitle = configs[chosenMenu.chosen].URL
 		}
 
 		db.Storage, err = db.New(configs[chosenMenu.chosen].URL)

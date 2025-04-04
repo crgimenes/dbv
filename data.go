@@ -407,6 +407,11 @@ func (m modelData) View() string {
 	if len(m.data) > 0 && len(m.data[0]) > 0 {
 		title += fmt.Sprintf(" | %d columns", len(m.data[0]))
 	}
+	title += title + fmt.Sprintf(" [%s]", DBTitle)
+	if len(title) > m.windowWidth {
+		title = title[:m.windowWidth-3] + "..."
+	}
+
 	outputLines = append(outputLines, title)
 
 	m.colWidths = computeColWidths(m.data)
