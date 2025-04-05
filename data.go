@@ -128,6 +128,16 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.editor.StartMultiEditing(insertSQL, m.windowWidth, m.windowHeight, "insert")
 					return m, nil
+				case m.cmdInput.Value() == "struct":
+					m.commandMode = false
+					structDefinition, err := db.Storage.CreateGoStructDefinition(m.tableName)
+					if err != nil {
+						m.showingError = true
+						m.errorMessage = err.Error()
+						return m, nil
+					}
+					m.editor.StartMultiEditing(structDefinition, m.windowWidth, m.windowHeight, "struct")
+					return m, nil
 				default:
 					m.showingError = true
 					m.errorMessage = fmt.Sprintf("Unrecognized command: %s", m.cmdInput.Value())
@@ -305,6 +315,14 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.editor.StartMultiEditing(insertSQL, m.windowWidth, m.windowHeight, "insert")
+		case "S":
+			structDefinition, err := db.Storage.CreateGoStructDefinition(m.tableName)
+			if err != nil {
+				m.showingError = true
+				m.errorMessage = err.Error()
+				return m, nil
+			}
+			m.editor.StartMultiEditing(structDefinition, m.windowWidth, m.windowHeight, "struct")
 		}
 	}
 
@@ -415,6 +433,8 @@ func (m modelData) View() string {
 			title += " (SQL Insert)"
 		case "cell":
 			title += " (Cell Edit)"
+		case "struct":
+			title += " (Go Struct)"
 		}
 
 		outputLines := []string{title}
