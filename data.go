@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -137,6 +138,16 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					m.editor.StartMultiEditing(structDefinition, m.windowWidth, m.windowHeight, "struct")
+					return m, nil
+				case m.cmdInput.Value() == "json":
+					m.commandMode = false
+					jsonDefinition, err := m.editor.createJSONStructure(&m)
+					if err != nil {
+						m.showingError = true
+						m.errorMessage = err.Error()
+						return m, nil
+					}
+					m.editor.StartMultiEditing(jsonDefinition, m.windowWidth, m.windowHeight, "json")
 					return m, nil
 				default:
 					m.showingError = true
@@ -323,6 +334,14 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.editor.StartMultiEditing(structDefinition, m.windowWidth, m.windowHeight, "struct")
+		case "ctrl+j":
+			jsonDefinition, err := m.editor.createJSONStructure(&m)
+			if err != nil {
+				m.showingError = true
+				m.errorMessage = err.Error()
+				return m, nil
+			}
+			m.editor.StartMultiEditing(jsonDefinition, m.windowWidth, m.windowHeight, "json")
 		}
 	}
 
@@ -435,6 +454,8 @@ func (m modelData) View() string {
 			title += " (Cell Edit)"
 		case "struct":
 			title += " (Go Struct)"
+		case "json":
+			title += " (JSON Structure)"
 		}
 
 		outputLines := []string{title}
@@ -866,4 +887,30 @@ func openExternalEditor(initialText string) tea.Cmd {
 }
 func openExternalPager(initialText string) tea.Cmd {
 	return createExternalProcessCmd(initialText, "pager")
+}
+
+func (me *modelEditor) createJSONStructure(m *modelData) (string, error) {
+	if m.selectedRow < 1 || m.selectedRow >= len(m.data) {
+		return "", fmt.Errorf("nenhum registro selecionado")
+	}
+	cols := m.data[0]
+	row := m.data[m.selectedRow]
+	record := make(map[string]any)
+
+	for i, colName := range cols {
+		val := row[i]
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			record[colName] = f
+		} else if val == "NULL" {
+			record[colName] = nil
+		} else {
+			record[colName] = val
+		}
+	}
+
+	output, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
 }
