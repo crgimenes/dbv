@@ -15,28 +15,39 @@ import (
 type modelEditor struct {
 	multiEditing bool
 	textArea     textarea.Model
+	editMode     string // "cell" ou "insert"
 }
 
 func newModelEditor() *modelEditor {
-	return &modelEditor{}
+	return &modelEditor{
+		editMode: "cell", // valor padrão
+	}
 }
 
 func (me *modelEditor) IsMultiEditing() bool {
 	return me.multiEditing
 }
 
-func (me *modelEditor) StartMultiEditing(initialValue string, width, height int) {
+func (me *modelEditor) StartMultiEditing(initialValue string, width, height int, mode string) {
 	ta := textarea.New()
 	ta.SetWidth(width - 2)
 	ta.SetHeight(height - 3)
 	ta.MaxHeight = 0
 	ta.Focus()
-	ta.Placeholder = "Edit cell..."
+
+	switch mode {
+	case "insert":
+		ta.Placeholder = "Edit SQL..."
+	default:
+		ta.Placeholder = "Edit cell..."
+	}
+
 	ta.CharLimit = 9437184
 	ta.SetValue(initialValue)
 
 	me.textArea = ta
 	me.multiEditing = true
+	me.editMode = mode
 }
 
 func (me *modelEditor) UpdateEditor(msg tea.Msg, m *modelData) (bool, tea.Cmd) {
@@ -46,8 +57,21 @@ func (me *modelEditor) UpdateEditor(msg tea.Msg, m *modelData) (bool, tea.Cmd) {
 		if key, ok := msg.(tea.KeyMsg); ok {
 			switch key.Type {
 			case tea.KeyCtrlS:
-				if me.updateCellValue(m, me.textArea.Value()) {
-					me.multiEditing = false
+				switch me.editMode {
+				case "cell":
+					if me.updateCellValue(m, me.textArea.Value()) {
+						me.multiEditing = false
+					}
+				case "insert":
+					sql := me.textArea.Value()
+					err := db.Storage.Exec(sql)
+					if err != nil {
+						m.showingError = true
+						m.errorMessage = fmt.Sprintf("Erro na execução: %v", err)
+					} else {
+						me.multiEditing = false
+						return false, m.resetTable()
+					}
 				}
 			case tea.KeyEsc:
 				me.multiEditing = false

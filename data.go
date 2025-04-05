@@ -118,6 +118,16 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						strings.TrimPrefix(m.cmdInput.Value(), "where"))
 					m.commandMode = false
 					return m, m.resetTable()
+				case m.cmdInput.Value() == "insert":
+					m.commandMode = false
+					insertSQL, err := db.Storage.CreateInsertStatement(m.tableName)
+					if err != nil {
+						m.showingError = true
+						m.errorMessage = err.Error()
+						return m, nil
+					}
+					m.editor.StartMultiEditing(insertSQL, m.windowWidth, m.windowHeight, "insert")
+					return m, nil
 				default:
 					m.showingError = true
 					m.errorMessage = fmt.Sprintf("Unrecognized command: %s", m.cmdInput.Value())
@@ -258,7 +268,7 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter", "e":
 			cellContent := m.data[m.selectedRow][m.selectedCol]
-			m.editor.StartMultiEditing(cellContent, m.windowWidth, m.windowHeight)
+			m.editor.StartMultiEditing(cellContent, m.windowWidth, m.windowHeight, "cell")
 		case ":":
 			m.commandMode = true
 			ci := textinput.New()
@@ -287,6 +297,14 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastCommand = ""
 			m.orderBys = nil
 			return m, func() tea.Msg { return "backToList" }
+		case "i":
+			insertSQL, err := db.Storage.CreateInsertStatement(m.tableName)
+			if err != nil {
+				m.showingError = true
+				m.errorMessage = err.Error()
+				return m, nil
+			}
+			m.editor.StartMultiEditing(insertSQL, m.windowWidth, m.windowHeight, "insert")
 		}
 	}
 
@@ -386,10 +404,19 @@ func (m modelData) View() string {
 		for len(taLines) < availableTAHeight {
 			taLines = append(taLines, "")
 		}
+
 		title := m.tableName
 		if title == "" {
 			title = "No table selected"
 		}
+
+		switch m.editor.editMode {
+		case "insert":
+			title += " (SQL Insert)"
+		case "cell":
+			title += " (Cell Edit)"
+		}
+
 		outputLines := []string{title}
 		outputLines = append(outputLines, taLines...)
 		outputLines = append(outputLines, statusBarStyle.Render("ctrl+s: save, ESC: cancel"), "")
