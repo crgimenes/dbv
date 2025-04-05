@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -53,6 +54,22 @@ func getInitLuaPath() string {
 	return filepath.Join(configHome, "dbv", "init.lua")
 }
 
+func maskDBURL(dbURL string) (string, error) {
+	u, err := url.Parse(dbURL)
+	if err != nil {
+		return "", err
+	}
+
+	if u.User != nil {
+		username := u.User.Username()
+		if _, ok := u.User.Password(); ok {
+			u.User = url.UserPassword(username, "...")
+		}
+	}
+
+	return u.String(), nil
+}
+
 func (m menuModel) Init() tea.Cmd {
 	return nil
 }
@@ -98,21 +115,15 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m menuModel) View() string {
 	s := statusBarStyle.Render("Select a database") + "\n\n"
 	for i, cfg := range m.choices {
+		title := cfg.Title
 		if m.selected == i {
-			title := cfg.Title
-			if title == "" {
-				title = cfg.URL
-			}
 			s += fmt.Sprintf("> %d ", i+1) +
 				selectedCellStyle.Render(fmt.Sprintf("%s", title)) + "\n"
-		} else {
-			title := cfg.Title
-			if title == "" {
-				title = cfg.URL
-			}
-			s += fmt.Sprintf("  %d ", i+1) +
-				statusBarStyle.Render(fmt.Sprintf("%s", title)) + "\n"
+			continue
 		}
+		s += fmt.Sprintf("  %d ", i+1) +
+			statusBarStyle.Render(fmt.Sprintf("%s", title)) + "\n"
+
 	}
 	s += "\n" + statusBarStyle.Render(
 		"Enter to select, q or esc to quit",
@@ -159,9 +170,12 @@ func runLuaFile(name string) {
 			url   luaState.LValue
 		)
 
+		titlestr := ""
 		title = confTbl.RawGetString("title")
+		titlestr = title.String()
 		if title == luaState.LNil {
-			title = confTbl.RawGetString("url")
+			titlestr = confTbl.RawGetString("url").String()
+			titlestr, err = maskDBURL(titlestr)
 		}
 
 		url = confTbl.RawGetString("url")
@@ -172,7 +186,7 @@ func runLuaFile(name string) {
 
 		cfg := db.DBConfig{
 			URL:   url.String(),
-			Title: title.String(),
+			Title: titlestr,
 		}
 
 		configs = append(configs, cfg)
@@ -186,10 +200,6 @@ func runLuaFile(name string) {
 	// if there is only one database, use it
 	if len(configs) == 1 {
 		DBTitle = configs[0].Title
-		if DBTitle == "" {
-			DBTitle = configs[0].URL
-		}
-
 		db.Storage, err = db.New(configs[0].URL)
 		if err != nil {
 			log.Fatal(err)
@@ -209,10 +219,6 @@ func runLuaFile(name string) {
 		}
 
 		DBTitle = configs[chosenMenu.chosen].Title
-		if DBTitle == "" {
-			DBTitle = configs[chosenMenu.chosen].URL
-		}
-
 		db.Storage, err = db.New(configs[chosenMenu.chosen].URL)
 		if err != nil {
 			log.Fatal(err)
