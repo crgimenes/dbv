@@ -419,7 +419,8 @@ func (m modelData) View() string {
 
 		outputLines := []string{title}
 		outputLines = append(outputLines, taLines...)
-		outputLines = append(outputLines, statusBarStyle.Render("ctrl+s: save, ESC: cancel"), "")
+		outputLines = append(outputLines, statusBarStyle.Render(
+			"ctrl+s: save, crtl+o open external editor, ctrl+q: quit, ESC: cancel"), "")
 		return strings.Join(outputLines, "\n")
 	}
 
@@ -781,7 +782,7 @@ func generateOrderBy(orderBys map[string]string) string {
 
 func createExternalProcessCmd(initialText, programType string) tea.Cmd {
 	return func() tea.Msg {
-		tmpFile, err := os.CreateTemp("", "external-"+programType+"-*.txt")
+		tmpFile, err := os.CreateTemp("", "external-"+programType+"-*.sql")
 		if err != nil {
 			if programType == "editor" {
 				return externalEditorMsg{err: err}

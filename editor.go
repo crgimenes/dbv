@@ -35,13 +35,6 @@ func (me *modelEditor) StartMultiEditing(initialValue string, width, height int,
 	ta.MaxHeight = 0
 	ta.Focus()
 
-	switch mode {
-	case "insert":
-		ta.Placeholder = "Edit SQL..."
-	default:
-		ta.Placeholder = "Edit cell..."
-	}
-
 	ta.CharLimit = 9437184
 	ta.SetValue(initialValue)
 
@@ -73,8 +66,20 @@ func (me *modelEditor) UpdateEditor(msg tea.Msg, m *modelData) (bool, tea.Cmd) {
 						return false, m.resetTable()
 					}
 				}
+			case tea.KeyCtrlO:
+				return me.multiEditing, openExternalEditor(me.textArea.Value())
 			case tea.KeyEsc:
 				me.multiEditing = false
+			}
+		}
+
+		switch x := msg.(type) {
+		case externalEditorMsg:
+			if x.err != nil {
+				m.showingError = true
+				m.errorMessage = x.err.Error()
+			} else {
+				me.textArea.SetValue(x.newText)
 			}
 		}
 		return me.multiEditing, cmd
