@@ -694,11 +694,14 @@ func renderRow(row []string, colWidths []int, rowHeight, horizontalOff, tableWid
 	}
 	rendered := make([]string, rowHeight)
 	for i := 0; i < rowHeight; i++ {
-		parts := make([]string, len(cells))
+		var sb strings.Builder
 		for j, cellLines := range cells {
-			parts[j] = cellLines[i]
+			if j > 0 {
+				sb.WriteString("  ")
+			}
+			sb.WriteString(cellLines[i])
 		}
-		rendered[i] = strings.Join(parts, "  ")
+		rendered[i] = sb.String()
 	}
 	return rendered
 }
@@ -720,11 +723,14 @@ func highlightCell(rowLines []string, row []string, colWidths []int, rowHeight, 
 	}
 	newRow := make([]string, rowHeight)
 	for i := 0; i < rowHeight; i++ {
-		parts := make([]string, len(cells))
+		var sb strings.Builder
 		for j, cellLines := range cells {
-			parts[j] = cellLines[i]
+			if j > 0 {
+				sb.WriteString("  ")
+			}
+			sb.WriteString(cellLines[i])
 		}
-		newRow[i] = strings.Join(parts, "  ")
+		newRow[i] = sb.String()
 	}
 	return newRow
 }

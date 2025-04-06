@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -48,12 +49,11 @@ func New(dataBaseURL string) (*Postgres, error) {
 func open(dbsource string) (db *sqlx.DB, err error) {
 	db, err = sqlx.Open("postgres", dbsource)
 	if err != nil {
-		err = fmt.Errorf("error open db: %v", err)
-		return
+		return nil, err
 	}
 	err = db.Ping()
 	if err != nil {
-		log.Fatalln(err)
+		return nil, err
 	}
 	db.SetMaxOpenConns(50)
 	db.SetMaxIdleConns(30)
@@ -79,19 +79,11 @@ func (pg *Postgres) BeginTransaction() (*Transaction, error) {
 
 func (pg *Transaction) Commit() error {
 	err := pg.tx.Commit()
-	if err != nil {
-		rollbackErr := pg.Rollback()
-		if rollbackErr != nil {
-			panic(rollbackErr)
-		}
-	}
-	pg.tx = nil
 	return err
 }
 
 func (pg *Transaction) Rollback() error {
 	err := pg.tx.Rollback()
-	pg.tx = nil
 	return err
 }
 
@@ -440,4 +432,12 @@ func (pg *Postgres) UpdateDataCell(
 	}
 
 	return nil
+}
+
+func (pg *Postgres) QueryRowContext(
+	ctx context.Context,
+	query string,
+	args ...any,
+) *sql.Row {
+	return pg.DB.QueryRowContext(ctx, query, args...)
 }

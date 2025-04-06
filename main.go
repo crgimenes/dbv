@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"dbv/db"
 	"dbv/lua"
@@ -141,21 +142,26 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m menuModel) View() string {
-	s := statusBarStyle.Render("Select a database") + "\n\n"
+	var sb strings.Builder
+	sb.WriteString(statusBarStyle.Render("Select a database"))
+	sb.WriteString("\n\n")
 	for i, cfg := range m.choices {
 		title := cfg.Title
 		if m.selected == i {
-			s += fmt.Sprintf(" %d ", i+1) +
-				selectedCellStyle.Render(title) + "\n"
+			sb.WriteString(fmt.Sprintf(" %d ", i+1))
+			sb.WriteString(selectedCellStyle.Render(title))
+			sb.WriteString("\n")
 			continue
 		}
-		s += fmt.Sprintf("  %d ", i+1) +
-			statusBarStyle.Render(title) + "\n"
+		sb.WriteString(fmt.Sprintf("  %d ", i+1))
+		sb.WriteString(statusBarStyle.Render(title))
+		sb.WriteString("\n")
 	}
-	s += "\n" + statusBarStyle.Render(
+	sb.WriteString("\n")
+	sb.WriteString(statusBarStyle.Render(
 		"Enter to select, q or esc to quit",
-	)
-	return s
+	))
+	return sb.String()
 }
 
 func runLuaFile(name string) {

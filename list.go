@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -86,6 +87,7 @@ func initialModelList() modelList {
 	}
 
 	ti := textinput.New()
+	ti.Prompt = "/"
 	ti.Placeholder = "regex filter"
 	ti.CharLimit = 256
 	ti.Width = 20
@@ -233,12 +235,14 @@ func (m modelList) View() string {
 
 	title := fmt.Sprintf("dbv %s - Database Viewer [%s]\n", GitTag, DBTitle)
 
+	var sb strings.Builder
 	s := titleStyle.Render(title)
 	if len(s) > m.windowWidth {
 		if m.windowWidth > 3 {
 			s = s[:m.windowWidth-3] + "..."
 		}
 	}
+	sb.WriteString(s)
 
 	header := fmt.Sprintf("  %s %s %s %s",
 		formatLeft("NAME", nameWidth),
@@ -246,13 +250,11 @@ func (m modelList) View() string {
 		formatRight("SIZE", sizeWidth),
 		formatLeft("PRIMARY KEY", pkWidth))
 	header = headerStyle.Render(header)
-	s += "\033[1m" + header + "\033[0m\n"
+	sb.WriteString("\033[1m" + header + "\033[0m\n")
 
 	tableDataArea := m.windowHeight - 4
 	visibleEnd := m.offset + tableDataArea
-	if visibleEnd > len(m.tableData) {
-		visibleEnd = len(m.tableData)
-	}
+	visibleEnd = min(visibleEnd, len(m.tableData))
 
 	for i := m.offset; i < visibleEnd; i++ {
 		row := m.tableData[i]
@@ -272,19 +274,21 @@ func (m modelList) View() string {
 			line = selIndicator +
 				tableCellStyle.Render(line)
 		}
-		s += line + "\n"
+		sb.WriteString(line)
+		sb.WriteString("\n")
 	}
 	for i := visibleEnd - m.offset; i < tableDataArea; i++ {
-		s += "\n"
+		sb.WriteString("\n")
 	}
 
 	status := fmt.Sprintf("Row %d of %d", m.selected+1, len(m.tableData))
-	s += statusBarStyle.Render(status) + "\n"
+	sb.WriteString(statusBarStyle.Render(status))
+	sb.WriteString("\n")
 
 	if m.textInputActive {
-		s += m.textInput.View()
+		sb.WriteString(m.textInput.View())
 	} else {
-		s += ""
+		sb.WriteString("")
 	}
-	return s
+	return sb.String()
 }
