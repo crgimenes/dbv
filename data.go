@@ -312,7 +312,7 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.editor.StartMultiEditing(structDefinition, m.windowWidth, m.windowHeight, "struct")
-		case "ctrl+j":
+		case "J":
 			jsonDefinition, err := m.editor.createJSONStructure(&m)
 			if err != nil {
 				m.showingError = true
