@@ -15,12 +15,12 @@ import (
 type modelEditor struct {
 	multiEditing bool
 	textArea     textarea.Model
-	editMode     string // "cell" ou "insert"
+	editMode     string // "cell" or "insert"
 }
 
 func newModelEditor() *modelEditor {
 	return &modelEditor{
-		editMode: "cell", // valor padrão
+		editMode: "cell",
 	}
 }
 
@@ -37,6 +37,8 @@ func (me *modelEditor) StartMultiEditing(initialValue string, width, height int,
 
 	ta.CharLimit = 9437184
 	ta.SetValue(initialValue)
+	ta.Prompt = ""
+	ta.ShowLineNumbers = false
 
 	me.textArea = ta
 	me.multiEditing = true

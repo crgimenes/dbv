@@ -226,7 +226,7 @@ func (m modelList) View() string {
 		width = 80
 	}
 
-	selWidth := 4
+	selWidth := 2
 	gaps := 4
 	remaining := width - selWidth - gaps
 	if remaining < 0 {
@@ -244,8 +244,7 @@ func (m modelList) View() string {
 		}
 	}
 
-	header := fmt.Sprintf("%s %s %s %s %s",
-		"    ",
+	header := fmt.Sprintf("  %s %s %s %s",
 		formatLeft("NAME", nameWidth),
 		formatLeft("TYPE", typeWidth),
 		formatRight("SIZE", sizeWidth),
@@ -262,10 +261,10 @@ func (m modelList) View() string {
 		row := m.tableData[i]
 		selIndicator := " "
 		if i == m.selected {
-			selIndicator = "→"
+			selIndicator = ""
 		}
 		line := fmt.Sprintf("%s %s %s %s %s",
-			formatLeft(selIndicator, selWidth),
+			selIndicator,
 			formatLeft(row.Name, nameWidth),
 			formatLeft(row.Type, typeWidth),
 			formatRight(row.Size, sizeWidth),

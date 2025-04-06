@@ -117,13 +117,12 @@ func (m menuModel) View() string {
 	for i, cfg := range m.choices {
 		title := cfg.Title
 		if m.selected == i {
-			s += fmt.Sprintf("> %d ", i+1) +
-				selectedCellStyle.Render(fmt.Sprintf("%s", title)) + "\n"
+			s += fmt.Sprintf(" %d ", i+1) +
+				selectedCellStyle.Render(title) + "\n"
 			continue
 		}
 		s += fmt.Sprintf("  %d ", i+1) +
-			statusBarStyle.Render(fmt.Sprintf("%s", title)) + "\n"
-
+			statusBarStyle.Render(title) + "\n"
 	}
 	s += "\n" + statusBarStyle.Render(
 		"Enter to select, q or esc to quit",
