@@ -435,11 +435,9 @@ func (m modelData) View() string {
 		outputLines := []string{title}
 		outputLines = append(outputLines, taLines...)
 
-		var statusBarText string
+		statusBarText := "crtl+o open external editor, ESC: cancel"
 		if m.editor.editMode == "cell" || m.editor.editMode == "insert" {
-			statusBarText = "ctrl+s: save, crtl+o open external editor, ctrl+q: quit, ESC: cancel"
-		} else {
-			statusBarText = "crtl+o open external editor, ctrl+q: quit, ESC: cancel"
+			statusBarText = "ctrl+s: save, crtl+o open external editor, ESC: cancel"
 		}
 		outputLines = append(outputLines, statusBarStyle.Render(statusBarText), "")
 		return strings.Join(outputLines, "\n")
