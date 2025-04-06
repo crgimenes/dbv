@@ -11,6 +11,7 @@ import (
 	"dbv/lua"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	luaState "github.com/yuin/gopher-lua"
 )
 
@@ -29,6 +30,33 @@ type menuModel struct {
 var (
 	GitTag  = "v0.0.0"
 	DBTitle = "-"
+
+	themeBackground = lipgloss.Color("#000000")
+	//themeForeground = lipgloss.Color("#F8F8F2")
+	//Accent     = lipgloss.Color("#6272A4")
+	//Background      = lipgloss.Color("#282A36")
+	themeForeground = lipgloss.Color("#F8F8F2")
+	themeAccent     = lipgloss.Color("#6272A4")
+	themeTitle      = lipgloss.Color("#FF79C6")
+
+	titleStyle = lipgloss.NewStyle().
+			Foreground(themeTitle).
+			Background(themeBackground)
+
+	statusBarStyle = lipgloss.NewStyle().
+			Foreground(themeAccent).
+			Bold(true)
+	headerCellStyle = lipgloss.NewStyle().
+			Foreground(themeAccent).
+			Background(themeBackground).
+			Bold(true)
+	selectedCellStyle = lipgloss.NewStyle().
+				Foreground(themeForeground).
+				Background(themeAccent).
+				Bold(true)
+	errorStatusBarStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FF5555")).
+				Bold(true)
 )
 
 func fileExists(name string) bool {

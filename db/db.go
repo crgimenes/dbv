@@ -77,39 +77,42 @@ func (pg *Postgres) BeginTransaction() (*Transaction, error) {
 	return &t, nil
 }
 
-func (pg Transaction) Commit() error {
+func (pg *Transaction) Commit() error {
 	err := pg.tx.Commit()
 	if err != nil {
-		pg.Rollback()
+		rollbackErr := pg.Rollback()
+		if rollbackErr != nil {
+			panic(rollbackErr)
+		}
 	}
 	pg.tx = nil
 	return err
 }
 
-func (pg Transaction) Rollback() error {
+func (pg *Transaction) Rollback() error {
 	err := pg.tx.Rollback()
 	pg.tx = nil
 	return err
 }
 
-func (pg Transaction) Select(dest any, query string, args ...any) error {
+func (pg *Transaction) Select(dest any, query string, args ...any) error {
 	return pg.tx.Select(dest, query, args...)
 }
 
-func (pg Transaction) Query(query string, args ...any) (*sql.Rows, error) {
+func (pg *Transaction) Query(query string, args ...any) (*sql.Rows, error) {
 	return pg.tx.Query(query, args...)
 }
 
-func (pg Transaction) Get(dest any, query string, args ...any) error {
+func (pg *Transaction) Get(dest any, query string, args ...any) error {
 	return pg.tx.Get(dest, query, args...)
 }
 
-func (pg Transaction) Exec(query string, args ...any) error {
+func (pg *Transaction) Exec(query string, args ...any) error {
 	_, err := pg.tx.Exec(query, args...)
 	return err
 }
 
-func (pg Transaction) QueryRow(query string, args ...any) *sql.Row {
+func (pg *Transaction) QueryRow(query string, args ...any) *sql.Row {
 	return pg.tx.QueryRow(query, args...)
 }
 

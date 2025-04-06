@@ -10,7 +10,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"dbv/db"
 )
@@ -31,27 +30,6 @@ const (
 	maxCellHeight     = 1
 	minTerminalWidth  = 10
 	minTerminalHeight = 5
-)
-
-var (
-	Background = lipgloss.Color("#282A36")
-	Foreground = lipgloss.Color("#F8F8F2")
-	Accent     = lipgloss.Color("#6272A4")
-
-	statusBarStyle = lipgloss.NewStyle().
-			Foreground(Accent).
-			Bold(true)
-	headerCellStyle = lipgloss.NewStyle().
-			Foreground(Accent).
-			Background(Background).
-			Bold(true)
-	selectedCellStyle = lipgloss.NewStyle().
-				Foreground(Foreground).
-				Background(Accent).
-				Bold(true)
-	errorStatusBarStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#FF5555")).
-				Bold(true)
 )
 
 type modelData struct {
@@ -458,6 +436,8 @@ func (m modelData) View() string {
 			title += " (JSON Structure)"
 		}
 
+		title = titleStyle.Render(title)
+
 		outputLines := []string{title}
 		outputLines = append(outputLines, taLines...)
 
@@ -486,6 +466,8 @@ func (m modelData) View() string {
 	if len(title) > m.windowWidth {
 		title = title[:m.windowWidth-3] + "..."
 	}
+
+	title = titleStyle.Render(title)
 
 	outputLines = append(outputLines, title)
 

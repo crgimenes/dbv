@@ -11,12 +11,6 @@ import (
 	"dbv/db"
 )
 
-var (
-	themeBackground = lipgloss.Color("#000000")
-	themeForeground = lipgloss.Color("#F8F8F2")
-	themeAccent     = lipgloss.Color("#6272A4")
-)
-
 type TableInfo struct {
 	Name       string
 	Type       string
@@ -237,7 +231,9 @@ func (m modelList) View() string {
 	sizeWidth := int(0.15 * float64(remaining))
 	pkWidth := remaining - nameWidth - typeWidth - sizeWidth
 
-	s := fmt.Sprintf("dbv %s - Database Viewer [%s]\n", GitTag, DBTitle)
+	title := fmt.Sprintf("dbv %s - Database Viewer [%s]\n", GitTag, DBTitle)
+
+	s := titleStyle.Render(title)
 	if len(s) > m.width {
 		if m.width > 3 {
 			s = s[:m.width-3] + "..."
@@ -257,22 +253,24 @@ func (m modelList) View() string {
 	if visibleEnd > len(m.tableData) {
 		visibleEnd = len(m.tableData)
 	}
+
 	for i := m.offset; i < visibleEnd; i++ {
 		row := m.tableData[i]
-		selIndicator := " "
+		selIndicator := "  "
 		if i == m.selected {
-			selIndicator = ""
+			selIndicator = " "
 		}
-		line := fmt.Sprintf("%s %s %s %s %s",
-			selIndicator,
+		line := fmt.Sprintf("%s %s %s %s",
 			formatLeft(row.Name, nameWidth),
 			formatLeft(row.Type, typeWidth),
 			formatRight(row.Size, sizeWidth),
 			formatLeft(row.PrimaryKey, pkWidth))
 		if i == m.selected {
-			line = rowHighlight.Render(line)
+			line = selIndicator +
+				rowHighlight.Render(line)
 		} else {
-			line = tableCellStyle.Render(line)
+			line = selIndicator +
+				tableCellStyle.Render(line)
 		}
 		s += line + "\n"
 	}
