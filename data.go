@@ -334,16 +334,10 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	headerHeight := rowHeights[0]
 	tableAreaHeight := m.windowHeight - 3
-	if tableAreaHeight < 1 {
-		tableAreaHeight = 1
-	}
+	tableAreaHeight = max(tableAreaHeight, 1)
 	availableDataLines := tableAreaHeight - headerHeight
-	if availableDataLines < 1 {
-		availableDataLines = 1
-	}
-	if m.verticalOff < 1 {
-		m.verticalOff = 1
-	}
+	availableDataLines = max(availableDataLines, 1)
+	m.verticalOff = max(m.verticalOff, 1)
 
 	m = m.adjustVerticalOff(rowHeights, availableDataLines)
 
