@@ -336,8 +336,8 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelData.scrollThreshold = 10
 		m.modelData.columnInfo = columnInfo
 
-		m.modelData.windowWidth = m.modelList.width
-		m.modelData.windowHeight = m.modelList.height
+		m.modelData.windowWidth = m.modelList.windowWidth
+		m.modelData.windowHeight = m.modelList.windowHeight
 		m.modelData.editor = newModelEditor()
 
 		m.currentScreen = screenData

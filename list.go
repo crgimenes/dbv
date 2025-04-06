@@ -25,8 +25,8 @@ type modelList struct {
 	tableData       []TableInfo
 	selected        int
 	offset          int
-	width           int
-	height          int
+	windowWidth     int
+	windowHeight    int
 	textInput       textinput.Model
 	textInputActive bool
 }
@@ -147,8 +147,8 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		m.windowWidth = msg.Width
+		m.windowHeight = msg.Height
 		return m, nil
 
 	case tea.KeyMsg:
@@ -180,7 +180,7 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.selected < len(m.tableData)-1 {
 				m.selected++
 			}
-			tableDataArea := m.height - 4
+			tableDataArea := m.windowHeight - 4
 			if tableDataArea > 0 && m.selected >= m.offset+tableDataArea {
 				m.offset = m.selected - tableDataArea + 1
 			}
@@ -215,7 +215,7 @@ func (m modelList) View() string {
 		return m.err.Error()
 	}
 
-	width := m.width
+	width := m.windowWidth
 	if width == 0 {
 		width = 80
 	}
@@ -234,9 +234,9 @@ func (m modelList) View() string {
 	title := fmt.Sprintf("dbv %s - Database Viewer [%s]\n", GitTag, DBTitle)
 
 	s := titleStyle.Render(title)
-	if len(s) > m.width {
-		if m.width > 3 {
-			s = s[:m.width-3] + "..."
+	if len(s) > m.windowWidth {
+		if m.windowWidth > 3 {
+			s = s[:m.windowWidth-3] + "..."
 		}
 	}
 
@@ -248,7 +248,7 @@ func (m modelList) View() string {
 	header = headerStyle.Render(header)
 	s += "\033[1m" + header + "\033[0m\n"
 
-	tableDataArea := m.height - 4
+	tableDataArea := m.windowHeight - 4
 	visibleEnd := m.offset + tableDataArea
 	if visibleEnd > len(m.tableData) {
 		visibleEnd = len(m.tableData)
