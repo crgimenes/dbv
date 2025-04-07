@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	recordsPerPage = 1000
+	recordsPerPage = 200
 )
 
 type errMsg error
