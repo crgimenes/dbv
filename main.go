@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"dbv/db"
-	"dbv/lua"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	luaState "github.com/yuin/gopher-lua"
+
+	"github.com/crgimenes/dbv/db"
+	"github.com/crgimenes/dbv/lua"
 )
 
 const (

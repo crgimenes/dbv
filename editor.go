@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"dbv/db"
+	"github.com/crgimenes/dbv/db"
 )
 
 type modelEditor struct {

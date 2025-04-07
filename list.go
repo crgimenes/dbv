@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"dbv/db"
+	"github.com/crgimenes/dbv/db"
 )
 
 type TableInfo struct {
@@ -244,7 +244,7 @@ func (m modelList) View() string {
 	}
 	sb.WriteString(s)
 
-	header := fmt.Sprintf("  %s %s %s %s",
+	header := fmt.Sprintf("\n  %s %s %s %s",
 		formatLeft("NAME", nameWidth),
 		formatLeft("TYPE", typeWidth),
 		formatRight("SIZE", sizeWidth),

@@ -11,7 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"dbv/db"
+	"github.com/crgimenes/dbv/db"
 )
 
 type externalEditorMsg struct {
