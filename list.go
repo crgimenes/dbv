@@ -233,16 +233,16 @@ func (m modelList) View() string {
 	sizeWidth := int(0.15 * float64(remaining))
 	pkWidth := remaining - nameWidth - typeWidth - sizeWidth
 
-	title := fmt.Sprintf("dbv %s - Database Viewer [%s]\n", GitTag, DBTitle)
+	title := fmt.Sprintf("dbv %s - Database Viewer [%s]", GitTag, DBTitle)
 
 	var sb strings.Builder
-	s := titleStyle.Render(title)
+	s := title
 	if len(s) > m.windowWidth {
 		if m.windowWidth > 3 {
 			s = s[:m.windowWidth-3] + "..."
 		}
 	}
-	sb.WriteString(s)
+	sb.WriteString(titleStyle.Render(s))
 
 	header := fmt.Sprintf("\n  %s %s %s %s",
 		formatLeft("NAME", nameWidth),
