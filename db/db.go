@@ -17,8 +17,9 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/kevinburke/ssh_config"
-	_ "github.com/lib/pq"
 	"golang.org/x/crypto/ssh"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 var (
@@ -205,7 +206,7 @@ func open(dbsource string) (*sqlx.DB, error) {
 		dbsource = u.String()
 	}
 
-	db, err := sqlx.Open("postgres", dbsource)
+	db, err := sqlx.Open("pgx", dbsource)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +220,7 @@ func open(dbsource string) (*sqlx.DB, error) {
 }
 
 func openBasicConn(dbsource string) (db *sqlx.DB, err error) {
-	db, err = sqlx.Open("postgres", dbsource)
+	db, err = sqlx.Open("pgx", dbsource)
 	if err != nil {
 		return nil, err
 	}
