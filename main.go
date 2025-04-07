@@ -170,7 +170,7 @@ func runLuaFile(name string) {
 	defer L.Close()
 
 	// Read the Lua file.
-	b, err := os.ReadFile(name)
+	b, err := os.ReadFile(filepath.Clean(name))
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -10,14 +10,16 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/kevinburke/ssh_config"
-	_ "github.com/lib/pq"
 	"golang.org/x/crypto/ssh"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 var (
@@ -104,7 +106,7 @@ func open(dbsource string) (*sqlx.DB, error) {
 
 		if sshalias != "" {
 			configPath := os.ExpandEnv("$HOME/.ssh/config")
-			f, err := os.Open(configPath)
+			f, err := os.Open(filepath.Clean(configPath))
 			if err != nil {
 				return nil, fmt.Errorf("failed to open SSH config: %w", err)
 			}
@@ -154,7 +156,7 @@ func open(dbsource string) (*sqlx.DB, error) {
 			return nil, fmt.Errorf("failed to expand SSH key path: %w", err)
 		}
 
-		key, err := os.ReadFile(sshKeyPath)
+		key, err := os.ReadFile(filepath.Clean(sshKeyPath))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read SSH key: %w", err)
 		}
@@ -189,14 +191,14 @@ func open(dbsource string) (*sqlx.DB, error) {
 				remoteConn, err := sshConn.Dial("tcp", remoteTarget)
 				if err != nil {
 					log.Printf("failed to dial remote target: %v", err)
-					localConn.Close()
+					_ = localConn.Close()
 					continue
 				}
 				go func() {
-					defer localConn.Close()
-					defer remoteConn.Close()
-					go io.Copy(localConn, remoteConn)
-					io.Copy(remoteConn, localConn)
+					defer func() { _ = localConn.Close() }()
+					defer func() { _ = remoteConn.Close() }()
+					go func() { _, _ = io.Copy(localConn, remoteConn) }()
+					_, _ = io.Copy(remoteConn, localConn)
 				}()
 			}
 		}()
@@ -204,7 +206,7 @@ func open(dbsource string) (*sqlx.DB, error) {
 		dbsource = u.String()
 	}
 
-	db, err := sqlx.Open("postgres", dbsource)
+	db, err := sqlx.Open("pgx", dbsource)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +220,7 @@ func open(dbsource string) (*sqlx.DB, error) {
 }
 
 func openBasicConn(dbsource string) (db *sqlx.DB, err error) {
-	db, err = sqlx.Open("postgres", dbsource)
+	db, err = sqlx.Open("pgx", dbsource)
 	if err != nil {
 		return nil, err
 	}

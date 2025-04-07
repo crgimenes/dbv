@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -820,15 +821,15 @@ func createExternalProcessCmd(initialText, programType string) tea.Cmd {
 		}
 		filename := tmpFile.Name()
 		if _, err := tmpFile.WriteString(initialText); err != nil {
-			tmpFile.Close()
-			os.Remove(filename)
+			_ = tmpFile.Close()
+			_ = os.Remove(filename)
 			if programType == "editor" {
 				return externalEditorMsg{err: err}
 			}
 			return externalPagerMsg{err: err}
 		}
 		if err := tmpFile.Close(); err != nil {
-			os.Remove(filename)
+			_ = os.Remove(filename)
 			if programType == "editor" {
 				return externalEditorMsg{err: err}
 			}
@@ -853,8 +854,8 @@ func createExternalProcessCmd(initialText, programType string) tea.Cmd {
 
 		if programType == "editor" {
 			return tea.ExecProcess(cmd, func(err error) tea.Msg {
-				modifiedBytes, err2 := os.ReadFile(filename)
-				os.Remove(filename)
+				modifiedBytes, err2 := os.ReadFile(filepath.Clean(filename))
+				_ = os.Remove(filename)
 				if err2 != nil {
 					return externalEditorMsg{err: err2}
 				}
@@ -864,7 +865,7 @@ func createExternalProcessCmd(initialText, programType string) tea.Cmd {
 			})()
 		}
 		return tea.ExecProcess(cmd, func(err error) tea.Msg {
-			os.Remove(filename)
+			_ = os.Remove(filename)
 			return externalPagerMsg{err: err}
 		})()
 	}
