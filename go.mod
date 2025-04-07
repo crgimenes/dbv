@@ -7,8 +7,10 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.4
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/jmoiron/sqlx v1.4.0
+	github.com/kevinburke/ssh_config v1.2.0
 	github.com/lib/pq v1.10.9
 	github.com/yuin/gopher-lua v1.1.1
+	golang.org/x/crypto v0.37.0
 )
 
 require (
