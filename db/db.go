@@ -26,7 +26,8 @@ var (
 )
 
 type Postgres struct {
-	DB *sqlx.DB
+	DB      *sqlx.DB
+	schemas []string
 }
 
 type Transaction struct {
@@ -47,7 +48,16 @@ type DBConfig struct {
 
 func New(dataBaseURL string) (*Postgres, error) {
 	pg := &Postgres{}
-	var err error
+	u, err := url.Parse(dataBaseURL)
+	if err != nil {
+		return nil, err
+	}
+
+	pg.schemas = []string{"public"}
+	if u.Query().Has("search_path") {
+		pg.schemas = strings.Split(u.Query().Get("search_path"), ",")
+	}
+
 	pg.DB, err = open(dataBaseURL)
 	return pg, err
 }
@@ -324,11 +334,12 @@ func (pg *Postgres) ListTablesAndViews() ([]TableInfo, error) {
         ) AS primary_key
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+        WHERE n.nspname IN (%s)
           AND c.relkind IN ('r', 'v', 'm')
         ORDER BY table_type,c.relname;`
 	var tables []TableInfo
-	err := pg.DB.Select(&tables, sqlStatement)
+	schemas := "'" + strings.Join(pg.schemas, "','") + "'"
+	err := pg.DB.Select(&tables, fmt.Sprintf(sqlStatement, schemas))
 	if err != nil {
 		return nil, err
 	}
