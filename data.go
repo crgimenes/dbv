@@ -266,8 +266,10 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selectedCol++
 			}
 		case "enter", "e":
-			cellContent := m.data[m.selectedRow][m.selectedCol]
-			m.editor.StartMultiEditing(cellContent, m.windowWidth, m.windowHeight, "cell")
+			if len(m.data) > m.selectedRow && m.selectedRow >= 0 && len(m.data[m.selectedRow]) > m.selectedCol && m.selectedCol >= 0 {
+				cellContent := m.data[m.selectedRow][m.selectedCol]
+				m.editor.StartMultiEditing(cellContent, m.windowWidth, m.windowHeight, "cell")
+			}
 		case ":":
 			m.commandMode = true
 			ci := textinput.New()
