@@ -64,16 +64,9 @@ func expandPath(p string) (string, error) {
 	return p, nil
 }
 
-// open establishes a database connection.
-// If the dbsource begins with "ssh+", an SSH tunnel is set up automatically.
-// The DSN may include SSH tunnel parameters via query string. Além disso, se for
-// informado o parâmetro "sshalias", os parâmetros de conexão serão carregados do
-// arquivo ~/.ssh/config.
-// Exemplo de DSN:
 // ssh+postgres://dbUser:dbPass@dbRemoteHost:5432/dbname?sshalias=mydb&localport=5433&sslmode=disable
 func open(dbsource string) (*sqlx.DB, error) {
 	if strings.HasPrefix(dbsource, "ssh+") {
-		// Remove o prefixo "ssh+" e parseia a URL
 		dbsource = strings.TrimPrefix(dbsource, "ssh+")
 		u, err := url.Parse(dbsource)
 		if err != nil {
@@ -81,7 +74,6 @@ func open(dbsource string) (*sqlx.DB, error) {
 		}
 		q := u.Query()
 
-		// Parâmetros SSH extraídos da query string
 		sshUser := q.Get("sshuser")
 		sshHost := q.Get("sshhost")
 		sshPort := q.Get("sshport")
@@ -100,7 +92,6 @@ func open(dbsource string) (*sqlx.DB, error) {
 			sshPort = "22"
 		}
 
-		// Se "sshalias" estiver definido, carrega parâmetros do ~/.ssh/config
 		if sshalias != "" {
 			configPath := os.ExpandEnv("$HOME/.ssh/config")
 			f, err := os.Open(configPath)
@@ -112,7 +103,6 @@ func open(dbsource string) (*sqlx.DB, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to decode SSH config: %w", err)
 			}
-			// Preenche parâmetros que não foram informados explicitamente
 			if sshUser == "" {
 				sshUser, _ = sshCfg.Get(sshalias, "User")
 				if sshUser == "" {
@@ -139,7 +129,6 @@ func open(dbsource string) (*sqlx.DB, error) {
 			}
 		}
 
-		// Remove os parâmetros SSH para que não sejam passados para o Postgres
 		q.Del("sshuser")
 		q.Del("sshhost")
 		q.Del("sshport")
@@ -149,8 +138,6 @@ func open(dbsource string) (*sqlx.DB, error) {
 		q.Del("remotetarget")
 
 		u.RawQuery = q.Encode()
-
-		// Lê e parseia a chave privada SSH
 
 		sshKeyPath, err = expandPath(sshKeyPath)
 		if err != nil {
@@ -165,22 +152,18 @@ func open(dbsource string) (*sqlx.DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse SSH key: %w", err)
 		}
-		// Configura o cliente SSH
 		sshConfig := &ssh.ClientConfig{
 			User: sshUser,
 			Auth: []ssh.AuthMethod{
 				ssh.PublicKeys(signer),
 			},
-			// Em produção, utilize verificação adequada de host key.
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Use a proper host key callback
 			Timeout:         5 * time.Second,
 		}
-		// Estabelece conexão SSH
 		sshConn, err := ssh.Dial("tcp", net.JoinHostPort(sshHost, sshPort), sshConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to dial SSH: %w", err)
 		}
-		// Inicia um listener local para redirecionar as conexões
 		listener, err := net.Listen("tcp", net.JoinHostPort("localhost", localPort))
 		if err != nil {
 			return nil, fmt.Errorf("failed to start local listener: %w", err)
@@ -207,12 +190,10 @@ func open(dbsource string) (*sqlx.DB, error) {
 				}()
 			}
 		}()
-		// Atualiza o DSN para apontar para o túnel local
 		u.Host = net.JoinHostPort("localhost", localPort)
 		dbsource = u.String()
 	}
 
-	// Conecta ao banco de dados normalmente
 	db, err := sqlx.Open("postgres", dbsource)
 	if err != nil {
 		return nil, err
