@@ -313,7 +313,7 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastCommand = ""
 			m.orderBys = nil
 			return m, func() tea.Msg { return "backToList" }
-		case "i":
+		case "I":
 			insertSQL, err := db.Storage.CreateInsertStatement(m.tableName)
 			if err != nil {
 				m.showingError = true
@@ -337,7 +337,7 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.editor.StartMultiEditing(jsonDefinition, m.windowWidth, m.windowHeight, "json")
-		case "u":
+		case "U":
 			if m.pk == "" || m.pk == "-" {
 				m.showingError = true
 				m.errorMessage = "Update not allowed, no primary key defined"
