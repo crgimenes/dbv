@@ -128,6 +128,20 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.editor.StartMultiEditing(jsonDefinition, m.windowWidth, m.windowHeight, "json")
 					return m, nil
+				case m.cmdInput.Value() == "update":
+					if m.pk == "" || m.pk == "-" {
+						m.showingError = true
+						m.errorMessage = "Update not allowed, no primary key defined"
+						return m, nil
+					}
+					m.commandMode = false
+					updateSQL, err := db.Storage.CreateUpdateStatement(m.tableName, m.data[0], m.data[m.selectedRow])
+					if err != nil {
+						m.showingError = true
+						m.errorMessage = err.Error()
+						return m, nil
+					}
+					m.editor.StartMultiEditing(updateSQL, m.windowWidth, m.windowHeight, "update")
 				default:
 					m.showingError = true
 					m.errorMessage = fmt.Sprintf("Unrecognized command: %s", m.cmdInput.Value())
