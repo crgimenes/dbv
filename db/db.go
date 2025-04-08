@@ -403,7 +403,7 @@ func (pg *Postgres) ListRecords(
 		if i > 0 {
 			separator = ", "
 		}
-		fields += separator + column.ColumnName
+		fields += separator + fmt.Sprintf("%q", column.ColumnName)
 	}
 
 	if orderBy == "" {
