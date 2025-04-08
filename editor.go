@@ -62,7 +62,17 @@ func (me *modelEditor) UpdateEditor(msg tea.Msg, m *modelData) (bool, tea.Cmd) {
 					err := db.Storage.Exec(sql)
 					if err != nil {
 						m.showingError = true
-						m.errorMessage = fmt.Sprintf("Erro na execução: %v", err)
+						m.errorMessage = fmt.Sprintf("Error executing: %v", err)
+					} else {
+						me.multiEditing = false
+						return false, m.resetTable()
+					}
+				case "update":
+					sql := me.textArea.Value()
+					err := db.Storage.Exec(sql)
+					if err != nil {
+						m.showingError = true
+						m.errorMessage = fmt.Sprintf("Error executing: %v", err)
 					} else {
 						me.multiEditing = false
 						return false, m.resetTable()

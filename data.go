@@ -323,6 +323,21 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.editor.StartMultiEditing(jsonDefinition, m.windowWidth, m.windowHeight, "json")
+		case "u":
+			if m.pk == "" || m.pk == "-" {
+				m.showingError = true
+				m.errorMessage = "Update not allowed, no primary key defined"
+				return m, nil
+			}
+			updateSQL, err := db.Storage.CreateUpdateStatement(m.tableName, m.data[0], m.data[m.selectedRow])
+			if err != nil {
+				m.showingError = true
+				m.errorMessage = err.Error()
+				return m, nil
+			}
+			m.commandMode = false
+			m.editor.StartMultiEditing(updateSQL, m.windowWidth, m.windowHeight, "update")
+			return m, nil
 		}
 	}
 
@@ -431,6 +446,8 @@ func (m modelData) View() string {
 			title += " (Go Struct)"
 		case "json":
 			title += " (JSON Structure)"
+		case "update":
+			title += " (SQL Update)"
 		}
 
 		title = titleStyle.Render(title)
@@ -439,7 +456,7 @@ func (m modelData) View() string {
 		outputLines = append(outputLines, taLines...)
 
 		statusBarText := "crtl+o open external editor, ESC: cancel"
-		if m.editor.editMode == "cell" || m.editor.editMode == "insert" {
+		if m.editor.editMode == "cell" || m.editor.editMode == "insert" || m.editor.editMode == "update" {
 			statusBarText = "ctrl+s: save, crtl+o open external editor, ESC: cancel"
 		}
 		outputLines = append(outputLines, statusBarStyle.Render(statusBarText), "")

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -621,4 +622,127 @@ func (pg *Postgres) QueryRowContext(
 	args ...any,
 ) *sql.Row {
 	return pg.DB.QueryRowContext(ctx, query, args...)
+}
+
+func (pg *Postgres) CreateUpdateStatement(tableName string, headers []string, row []string) (string, error) {
+	pks, err := pg.GetPrimaryKeyColumns(tableName)
+	if err != nil {
+		return "", fmt.Errorf("error fetching primary key columns: %w", err)
+	}
+	if len(pks) == 0 {
+		return "", fmt.Errorf("no primary key columns found for table %s", tableName)
+	}
+
+	columns, err := pg.ListColumns(tableName)
+	if err != nil {
+		return "", fmt.Errorf("error fetching column types: %w", err)
+	}
+
+	colTypes := make(map[string]string)
+	for _, col := range columns {
+		colTypes[col.ColumnName] = col.DataType
+	}
+
+	formatValue := func(colName, value string) string {
+		if strings.ToUpper(value) == "NULL" {
+			return "NULL"
+		}
+
+		dataType, exists := colTypes[colName]
+		if !exists {
+			return fmt.Sprintf("'%s'", value)
+		}
+
+		lowerType := strings.ToLower(dataType)
+
+		if strings.Contains(lowerType, "int") ||
+			strings.Contains(lowerType, "serial") ||
+			strings.Contains(lowerType, "decimal") ||
+			strings.Contains(lowerType, "numeric") ||
+			strings.Contains(lowerType, "real") ||
+			strings.Contains(lowerType, "double") ||
+			strings.Contains(lowerType, "float") {
+			return value
+		}
+
+		if lowerType == "boolean" {
+			lowerValue := strings.ToLower(value)
+			if lowerValue == "true" || lowerValue == "false" {
+				return lowerValue
+			}
+			return fmt.Sprintf("'%s'", value)
+		}
+
+		if strings.Contains(lowerType, "json") ||
+			strings.Contains(lowerType, "timestamp") ||
+			strings.Contains(lowerType, "date") {
+			return fmt.Sprintf("'%s'", value)
+		}
+
+		return fmt.Sprintf("'%s'", value)
+	}
+
+	var setClauseLines []string
+	counter := 1
+	comma := ""
+	for i, col := range headers {
+		if slices.Contains(pks, col) {
+			continue
+		}
+		if i > 0 {
+			comma = ","
+		}
+		if i == len(headers)-1 {
+			comma = ""
+		}
+		value := row[i]
+		formattedValue := formatValue(col, value)
+		clause := fmt.Sprintf(`%q = %s%s`, col, formattedValue, comma)
+		setClauseLines = append(setClauseLines, fmt.Sprintf("    %s -- %d", clause, counter))
+		counter++
+	}
+	if len(setClauseLines) == 0 {
+		return "", fmt.Errorf("there are no columns to update")
+	}
+
+	var whereClauseLines []string
+	for i, pk := range pks {
+		idx := indexOf(headers, pk)
+		if idx < 0 {
+			return "", fmt.Errorf("column %s not found in headers", pk)
+		}
+		value := row[idx]
+		formattedValue := formatValue(pk, value)
+		var clause string
+		if strings.ToUpper(value) == "NULL" {
+			clause = fmt.Sprintf(`"%s" IS NULL`, pk)
+		} else {
+			clause = fmt.Sprintf(`"%s" = %s`, pk, formattedValue)
+		}
+		comma := ""
+		if i < len(pks)-1 {
+			comma = ","
+		}
+		whereClauseLines = append(
+			whereClauseLines,
+			fmt.Sprintf("%s%s -- %d", clause, comma, counter))
+		counter++
+	}
+
+	updateStatement := fmt.Sprintf(`UPDATE %q
+SET
+%s
+WHERE %s
+;`, tableName, strings.Join(setClauseLines, "\n"),
+		strings.Join(whereClauseLines, "\nAND "))
+	return updateStatement, nil
+}
+
+func indexOf(slice []string, item string) int {
+	for i, s := range slice {
+		if s == item {
+			return i
+		}
+	}
+	return -1
 }
