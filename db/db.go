@@ -18,6 +18,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/kevinburke/ssh_config"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -164,13 +165,19 @@ func open(dbsource string) (*sqlx.DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse SSH key: %w", err)
 		}
+
+		hostKeyCallback, err := knownhosts.New(os.ExpandEnv("$HOME/.ssh/known_hosts"))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create host key callback: %w", err)
+		}
+
 		sshConfig := &ssh.ClientConfig{
 			User: sshUser,
 			Auth: []ssh.AuthMethod{
 				ssh.PublicKeys(signer),
 			},
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Use a proper host key callback
 			Timeout:         5 * time.Second,
+			HostKeyCallback: hostKeyCallback,
 		}
 		sshConn, err := ssh.Dial("tcp", net.JoinHostPort(sshHost, sshPort), sshConfig)
 		if err != nil {
