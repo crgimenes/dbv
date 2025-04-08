@@ -682,31 +682,42 @@ func (pg *Postgres) CreateUpdateStatement(tableName string, headers []string, ro
 		return fmt.Sprintf("'%s'", value)
 	}
 
-	var setClauseLines []string
-	counter := 1
-	comma := ""
+	var setClauseStrings []string
 	for i, col := range headers {
 		if slices.Contains(pks, col) {
 			continue
 		}
-		if i > 0 {
-			comma = ","
-		}
+		value := row[i]
+		formattedValue := formatValue(col, value)
+		comma := ","
 		if i == len(headers)-1 {
 			comma = ""
 		}
-		value := row[i]
-		formattedValue := formatValue(col, value)
-		clause := fmt.Sprintf(`%q = %s%s`, col, formattedValue, comma)
-		setClauseLines = append(setClauseLines, fmt.Sprintf("    %s -- %d", clause, counter))
-		counter++
+		clause := fmt.Sprintf(`    %q = %s%s`, col, formattedValue, comma)
+		setClauseStrings = append(setClauseStrings, clause)
 	}
-	if len(setClauseLines) == 0 {
+
+	if len(setClauseStrings) == 0 {
 		return "", fmt.Errorf("there are no columns to update")
 	}
 
-	var whereClauseLines []string
-	for i, pk := range pks {
+	maxSetLength := 0
+	for _, s := range setClauseStrings {
+		if len(s) > maxSetLength {
+			maxSetLength = len(s)
+		}
+	}
+
+	var setClauseLines []string
+	counter := 1
+	for _, s := range setClauseStrings {
+		padding := strings.Repeat(" ", maxSetLength-len(s))
+		setClauseLines = append(setClauseLines, fmt.Sprintf("%s%s -- %d", s, padding, counter))
+		counter++
+	}
+
+	var whereClauseStrings []string
+	for _, pk := range pks {
 		idx := indexOf(headers, pk)
 		if idx < 0 {
 			return "", fmt.Errorf("column %s not found in headers", pk)
@@ -719,13 +730,24 @@ func (pg *Postgres) CreateUpdateStatement(tableName string, headers []string, ro
 		} else {
 			clause = fmt.Sprintf(`"%s" = %s`, pk, formattedValue)
 		}
-		comma := ""
-		if i < len(pks)-1 {
-			comma = ","
+		whereClauseStrings = append(whereClauseStrings, clause)
+	}
+
+	maxWhereLength := 0
+	for _, s := range whereClauseStrings {
+		if len(s) > maxWhereLength {
+			maxWhereLength = len(s)
 		}
-		whereClauseLines = append(
-			whereClauseLines,
-			fmt.Sprintf("%s%s -- %d", clause, comma, counter))
+	}
+
+	var whereClauseLines []string
+	for i, s := range whereClauseStrings {
+		padding := strings.Repeat(" ", maxWhereLength-len(s))
+		connector := "  AND "
+		if i == 0 {
+			connector = ""
+		}
+		whereClauseLines = append(whereClauseLines, fmt.Sprintf("%s%s%s -- %d", connector, s, padding, counter))
 		counter++
 	}
 
@@ -734,7 +756,7 @@ SET
 %s
 WHERE %s
 ;`, tableName, strings.Join(setClauseLines, "\n"),
-		strings.Join(whereClauseLines, "\nAND "))
+		strings.Join(whereClauseLines, "\n"))
 	return updateStatement, nil
 }
 
