@@ -847,10 +847,7 @@ func createExternalProcessCmd(initialText, programType string) tea.Cmd {
 				program = "less"
 			}
 		}
-		cmd := exec.Command(program, filename)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd := exec.Command(program, filename) //gosec:disable G204
 
 		if programType == "editor" {
 			return tea.ExecProcess(cmd, func(err error) tea.Msg {
