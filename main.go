@@ -60,6 +60,14 @@ var (
 	errorStatusBarStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#FF5555")).
 				Bold(true)
+	formTitleStyle = lipgloss.NewStyle().
+			Foreground(themeTitle).
+			Bold(true)
+	submittedStyle = lipgloss.NewStyle().
+			Foreground(themeForeground)
+	abandonedStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FF5555")).
+			Bold(true)
 )
 
 func fileExists(name string) bool {
