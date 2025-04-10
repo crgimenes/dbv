@@ -34,6 +34,12 @@ type modelList struct {
 	textInputActive bool
 }
 
+// userViewMsg is a message for loading a user-defined view
+type userViewMsg struct {
+	name    string
+	sqlPath string
+}
+
 var (
 	rowHighlight = lipgloss.NewStyle().
 			Foreground(themeForeground).
@@ -127,6 +133,21 @@ func (m modelList) Init() tea.Cmd {
 	return nil
 }
 
+// loadUserViewSQL loads the content of a user-defined view SQL file
+func loadUserViewSQL(name string) (string, error) {
+	if userViewsDir == "" {
+		return "", fmt.Errorf("views directory not defined")
+	}
+
+	sqlPath := filepath.Join(userViewsDir, name+".sql")
+	content, err := os.ReadFile(sqlPath)
+	if err != nil {
+		return "", fmt.Errorf("error reading SQL file: %w", err)
+	}
+
+	return string(content), nil
+}
+
 func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.textInputActive {
 		switch msg := msg.(type) {
@@ -168,6 +189,10 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case errMsg:
+		m.err = msg
+		// Mostrar o erro e retornar para a lista quando qualquer tecla for pressionada
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.windowWidth = msg.Width
@@ -175,6 +200,12 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Se há um erro sendo exibido, qualquer tecla limpa o erro
+		if m.err != nil {
+			m.err = nil
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "/":
 			m.textInputActive = true
@@ -208,28 +239,29 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.offset = m.selected - tableDataArea + 1
 			}
 		case "enter":
-			if m.tableData[m.selected].Type == "User defined view" {
-				fmt.Println("User defined view selected: " + m.tableData[m.selected].Name)
-				return m, nil
-			}
-			selectedTable := ""
-			pk := ""
 			if m.selected >= 0 && m.selected < len(m.tableData) {
-				selectedTable = m.tableData[m.selected].Name
-				pk = m.tableData[m.selected].PrimaryKey
-			}
+				if m.tableData[m.selected].Type == "User defined view" {
+					viewName := m.tableData[m.selected].Name
+					sqlPath := filepath.Join(userViewsDir, viewName+".sql")
+					return m, func() tea.Msg {
+						return userViewMsg{
+							name:    viewName,
+							sqlPath: sqlPath,
+						}
+					}
+				}
 
-			return m, func() tea.Msg {
-				return showRecordsMsg{
-					tableName: selectedTable,
-					pk:        pk,
+				selectedTable := m.tableData[m.selected].Name
+				pk := m.tableData[m.selected].PrimaryKey
+
+				return m, func() tea.Msg {
+					return showRecordsMsg{
+						tableName: selectedTable,
+						pk:        pk,
+					}
 				}
 			}
 		}
-		return m, nil
-
-	case errMsg:
-		m.err = msg
 		return m, nil
 
 	default:
@@ -285,7 +317,7 @@ func (m modelList) View() string {
 		row := m.tableData[i]
 		selIndicator := "  "
 		if i == m.selected {
-			selIndicator = " "
+			selIndicator = "> "
 		}
 		line := fmt.Sprintf("%s %s %s %s",
 			formatLeft(row.Name, nameWidth),
@@ -306,8 +338,14 @@ func (m modelList) View() string {
 		sb.WriteString("\n")
 	}
 
-	status := fmt.Sprintf("Row %d of %d", m.selected+1, len(m.tableData))
-	sb.WriteString(statusBarStyle.Render(status))
+	// Exibir mensagem de erro na barra de status se existir, caso contrário exibir status normal
+	if m.err != nil {
+		statusText := fmt.Sprintf("Error: %v (Press any key to continue)", m.err)
+		sb.WriteString(errorStatusBarStyle.Render(statusText))
+	} else {
+		status := fmt.Sprintf("Row %d of %d", m.selected+1, len(m.tableData))
+		sb.WriteString(statusBarStyle.Render(status))
+	}
 	sb.WriteString("\n")
 
 	if m.textInputActive {

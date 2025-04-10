@@ -20,6 +20,15 @@ const (
 	recordsPerPage = 200
 )
 
+// Tipos de tela
+type screen int
+
+const (
+	screenList screen = iota
+	screenData
+	screenForm
+)
+
 type errMsg error
 
 type menuModel struct {
@@ -69,6 +78,25 @@ var (
 			Foreground(lipgloss.Color("#FF5555")).
 			Bold(true)
 )
+
+// showUserViewDataMsg is the message sent after executing a user-defined view
+type showUserViewDataMsg struct {
+	viewName string
+	sql      string
+}
+
+// showUserViewFormMsg is the message sent when a user-defined view has parameters
+type showUserViewFormMsg struct {
+	viewName string
+	sql      string
+	params   []Parameter
+}
+
+// formResultMsg is the message sent after filling out the form
+type formResultMsg struct {
+	viewName string
+	sql      string
+}
 
 func fileExists(name string) bool {
 	_, err := os.Stat(name)
@@ -158,7 +186,7 @@ func (m menuModel) View() string {
 	for i, cfg := range m.choices {
 		title := cfg.Title
 		if m.selected == i {
-			sb.WriteString(fmt.Sprintf(" %d ", i+1))
+			sb.WriteString(fmt.Sprintf("> %d ", i+1))
 			sb.WriteString(selectedCellStyle.Render(title))
 			sb.WriteString("\n")
 			continue
@@ -285,17 +313,11 @@ func runLuaFile(name string) {
 
 }
 
-type screen int
-
-const (
-	screenList screen = iota
-	screenData
-)
-
 type rootModel struct {
 	currentScreen screen
 	modelList     modelList
 	modelData     modelData
+	formModel     formModel
 }
 
 type showRecordsMsg struct {
@@ -373,6 +395,93 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.currentScreen = screenData
 		return m, nil
+
+	case userViewMsg:
+		// Load the SQL file content
+		sqlContent, err := os.ReadFile(msg.sqlPath)
+		if err != nil {
+			return m, tea.Cmd(func() tea.Msg {
+				return errMsg(fmt.Errorf("error reading SQL file: %w", err))
+			})
+		}
+
+		sql := string(sqlContent)
+		params := ExtractParameters(sql)
+
+		if len(params) > 0 {
+			// If the view has parameters, display the form
+			m.formModel = newFormModel(msg.name, sql, params)
+			m.formModel.windowWidth = m.modelList.windowWidth
+			m.formModel.windowHeight = m.modelList.windowHeight
+			m.currentScreen = screenForm
+			return m, nil
+		}
+
+		// If there are no parameters, execute the query directly
+		return m, func() tea.Msg {
+			return showUserViewDataMsg{
+				viewName: msg.name,
+				sql:      sql,
+			}
+		}
+
+	case formResultMsg:
+		// When the form is submitted, execute the query
+		return m, func() tea.Msg {
+			return showUserViewDataMsg{
+				viewName: msg.viewName,
+				sql:      msg.sql,
+			}
+		}
+
+	case showUserViewDataMsg:
+		// Execute the SQL query and display the results
+		records, columnInfo, err := db.Storage.QuerySQL(msg.sql)
+		if err != nil {
+			// When there's a SQL execution error, return to list with error message
+			m.currentScreen = screenList
+			return m, tea.Cmd(func() tea.Msg {
+				return errMsg(fmt.Errorf("error executing query: %w", err))
+			})
+		}
+
+		data := [][]string{}
+		columns := []string{}
+		for _, col := range columnInfo {
+			columns = append(columns, col.ColumnName)
+		}
+
+		data = append(data, columns)
+		for _, rec := range records {
+			row := []string{}
+			for _, col := range columnInfo {
+				row = append(row, fmt.Sprintf("%v", rec[col.ColumnName]))
+			}
+			data = append(data, row)
+		}
+
+		m.modelData.data = data
+		m.modelData.selectedRow = 1
+		m.modelData.selectedCol = 0
+		m.modelData.verticalOff = 1
+		m.modelData.horizontalOff = 0
+
+		m.modelData.tableName = msg.viewName
+		m.modelData.pk = "-" // Read-only mode
+		m.modelData.pageSize = recordsPerPage
+		m.modelData.loadedRecords = data[1:]
+		m.modelData.loadedOffset = 0
+		m.modelData.totalRecords = len(data) - 1
+		m.modelData.scrollThreshold = 10
+		m.modelData.columnInfo = columnInfo
+
+		m.modelData.windowWidth = m.modelList.windowWidth
+		m.modelData.windowHeight = m.modelList.windowHeight
+		m.modelData.editor = newModelEditor()
+
+		m.currentScreen = screenData
+		return m, nil
+
 	case string:
 		if msg == "backToList" {
 			m.currentScreen = screenList
@@ -389,6 +498,29 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newData, cmd := m.modelData.Update(msg)
 		m.modelData = newData.(modelData)
 		return m, cmd
+	case screenForm:
+		newForm, cmd := m.formModel.Update(msg)
+		formModel := newForm.(formModel)
+		m.formModel = formModel
+
+		if formModel.submitted {
+			// When the form is submitted, execute the query directly
+			// without transitioning back to the list screen first
+			m.currentScreen = screenData // Set directly to data screen
+			return m, func() tea.Msg {
+				return showUserViewDataMsg{
+					viewName: formModel.screenTitle,
+					sql:      formModel.finalSQL,
+				}
+			}
+		}
+
+		if formModel.abandoned {
+			// If the user cancels the form, return to the list
+			m.currentScreen = screenList
+		}
+
+		return m, cmd
 	}
 	return m, nil
 }
@@ -399,6 +531,8 @@ func (m rootModel) View() string {
 		return m.modelList.View()
 	case screenData:
 		return m.modelData.View()
+	case screenForm:
+		return m.formModel.View()
 	default:
 		return "Something went wrong..."
 	}
@@ -437,6 +571,7 @@ func main() {
 			currentScreen: screenList,
 			modelList:     initialModelList(),
 			modelData:     modelData{},
+			formModel:     formModel{},
 		},
 		tea.WithAltScreen(),
 	)

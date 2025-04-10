@@ -469,9 +469,13 @@ func (m modelData) View() string {
 		outputLines := []string{title}
 		outputLines = append(outputLines, taLines...)
 
+		// Check if this is a user-defined view (read-only mode)
 		statusBarText := "crtl+o open external editor, ESC: cancel"
 		if m.editor.editMode == "cell" || m.editor.editMode == "insert" || m.editor.editMode == "update" {
-			statusBarText = "ctrl+s: save, crtl+o open external editor, ESC: cancel"
+			// Only show ctrl+s option for editable modes when not in read-only mode
+			if m.pk != "-" {
+				statusBarText = "ctrl+s: save, crtl+o open external editor, ESC: cancel"
+			}
 		}
 		outputLines = append(outputLines, statusBarStyle.Render(statusBarText), "")
 		return strings.Join(outputLines, "\n")

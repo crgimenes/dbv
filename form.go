@@ -126,9 +126,9 @@ func (m formModel) Init() tea.Cmd {
 }
 
 // Update handles Tea messages.
-func (m *formModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m formModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.submitted || m.abandoned {
-		return m, tea.Quit
+		return m, nil // Removed tea.Quit to allow parent model to handle the state change
 	}
 
 	switch msg := msg.(type) {
@@ -139,7 +139,7 @@ func (m *formModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			m.abandoned = true
-			return m, tea.Quit
+			return m, nil // Just mark as abandoned, let parent model handle navigation
 		case tea.KeyEnter, tea.KeyCtrlS:
 			// Advance focus or submit if on last input.
 			if m.activeIndex < len(m.inputs)-1 {
@@ -148,8 +148,8 @@ func (m *formModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inputs[m.activeIndex].Focus()
 			} else {
 				m.submitted = true
-				m.computeFinalSQL()
-				return m, tea.Quit
+				m.finalSQL = m.computeFinalSQL()
+				return m, nil // Let parent model handle the submit action
 			}
 		case tea.KeyUp:
 			if m.activeIndex > 0 {
@@ -171,7 +171,7 @@ func (m *formModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // computeFinalSQL replaces the tokens in the SQL string with user-provided values.
-func (m *formModel) computeFinalSQL() {
+func (m formModel) computeFinalSQL() string {
 	final := m.baseSQL
 	for i, param := range m.parameters {
 		pattern := fmt.Sprintf(`\{\{\s*%s[^}]*\}\}`, regexp.QuoteMeta(param.Name))
@@ -179,7 +179,7 @@ func (m *formModel) computeFinalSQL() {
 		value := m.inputs[i].Value()
 		final = re.ReplaceAllString(final, value)
 	}
-	m.finalSQL = final
+	return final
 }
 
 // View renders the UI with the title at the top and the status bar and command line fixed at the bottom.
