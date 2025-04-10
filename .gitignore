@@ -32,3 +32,5 @@ todo.md
 dbv
 release.sh
 dist
+*.sql
+
