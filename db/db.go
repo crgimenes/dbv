@@ -769,3 +769,51 @@ func indexOf(slice []string, item string) int {
 	}
 	return -1
 }
+
+// QuerySQL executes the given SQL query and returns records with column definitions.
+func (pg *Postgres) QuerySQL(query string) ([]map[string]any, []ColumnInfo, error) {
+	rows, err := pg.DB.Queryx(query)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	// Get column names and types.
+	columnNames, err := rows.Columns()
+	if err != nil {
+		return nil, nil, err
+	}
+	colTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, nil, err
+	}
+	var columns []ColumnInfo
+	for i, name := range columnNames {
+		dtype := ""
+		if i < len(colTypes) {
+			dtype = colTypes[i].DatabaseTypeName()
+		}
+		columns = append(columns, ColumnInfo{
+			ColumnName: name,
+			DataType:   dtype,
+		})
+	}
+
+	var records []map[string]any
+	for rows.Next() {
+		record := make(map[string]any)
+		values := make([]any, len(columnNames))
+		pointers := make([]any, len(columnNames))
+		for i := range values {
+			pointers[i] = &values[i]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			return nil, nil, err
+		}
+		for i, col := range columnNames {
+			record[col] = values[i]
+		}
+		records = append(records, record)
+	}
+	return records, columns, nil
+}
