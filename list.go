@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -83,6 +85,25 @@ func initialModelList() modelList {
 			Type:       t.Type,
 			Size:       t.Size,
 			PrimaryKey: pk,
+		}
+	}
+
+	if userViewsDir != "" {
+		files, err := os.ReadDir(userViewsDir)
+		if err == nil {
+			var views []TableInfo
+			for _, f := range files {
+				if !f.IsDir() && filepath.Ext(f.Name()) == ".sql" {
+					name := strings.TrimSuffix(f.Name(), ".sql")
+					views = append(views, TableInfo{
+						Name:       name,
+						Type:       "User defined view",
+						Size:       "-",
+						PrimaryKey: "-",
+					})
+				}
+			}
+			data = append(views, data...)
 		}
 	}
 
@@ -187,6 +208,10 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.offset = m.selected - tableDataArea + 1
 			}
 		case "enter":
+			if m.tableData[m.selected].Type == "User defined view" {
+				fmt.Println("User defined view selected: " + m.tableData[m.selected].Name)
+				return m, nil
+			}
 			selectedTable := ""
 			pk := ""
 			if m.selected >= 0 && m.selected < len(m.tableData) {

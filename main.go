@@ -31,6 +31,8 @@ type menuModel struct {
 var (
 	GitTag  = "v0.0.0"
 	DBTitle = "-"
+	// new global variable to hold the views directory (if any)
+	userViewsDir string
 
 	themeBackground = lipgloss.Color("#000000")
 	//themeForeground = lipgloss.Color("#F8F8F2")
@@ -250,6 +252,7 @@ func runLuaFile(name string) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		userViewsDir = configs[0].ViewsPath // new assignment
 	}
 
 	// if there are multiple databases, show a menu to select one
@@ -269,6 +272,7 @@ func runLuaFile(name string) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		userViewsDir = configs[chosenMenu.chosen].ViewsPath // new assignment
 	}
 
 }
