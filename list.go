@@ -22,19 +22,21 @@ type TableInfo struct {
 }
 
 type modelList struct {
-	quitting        bool
-	err             error
-	originalData    []TableInfo
-	tableData       []TableInfo
-	selected        int
-	offset          int
-	windowWidth     int
-	windowHeight    int
-	textInput       textinput.Model
-	textInputActive bool
+	commandInputValue string
+	commandMode       bool
+	err               error
+	offset            int
+	originalData      []TableInfo
+	quitting          bool
+	selected          int
+	statusMessage     string
+	tableData         []TableInfo
+	textInput         textinput.Model
+	textInputActive   bool
+	windowHeight      int
+	windowWidth       int
 }
 
-// userViewMsg is a message for loading a user-defined view
 type userViewMsg struct {
 	name    string
 	sqlPath string
@@ -126,6 +128,8 @@ func initialModelList() modelList {
 		offset:          0,
 		textInput:       ti,
 		textInputActive: false,
+		commandMode:     false,
+		statusMessage:   "",
 	}
 }
 
@@ -133,65 +137,90 @@ func (m modelList) Init() tea.Cmd {
 	return nil
 }
 
-// loadUserViewSQL loads the content of a user-defined view SQL file
-func loadUserViewSQL(name string) (string, error) {
-	if userViewsDir == "" {
-		return "", fmt.Errorf("views directory not defined")
-	}
-
-	sqlPath := filepath.Join(userViewsDir, name+".sql")
-	content, err := os.ReadFile(sqlPath)
-	if err != nil {
-		return "", fmt.Errorf("error reading SQL file: %w", err)
-	}
-
-	return string(content), nil
-}
-
 func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.textInputActive {
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
 			switch msg.String() {
-			case "enter", "up", "down":
+			case "enter":
+				if m.commandMode {
+					cmd := m.textInput.Value()
+					m.commandInputValue = cmd
+					m.textInputActive = false
+					m.commandMode = false
+
+					switch {
+					case cmd == "q" || cmd == "Q" || cmd == "quit":
+						m.quitting = true
+						return m, tea.Quit
+					case cmd == "clear":
+						m.tableData = m.originalData
+						m.textInput.SetValue("")
+						m.statusMessage = "Cleared filter"
+					case cmd == "help":
+						m.statusMessage = "Help: / to filter, : to enter command mode, q to quit"
+					default:
+						if cmd != "" {
+							m.statusMessage = fmt.Sprintf("Unknown command: %q", cmd)
+						}
+					}
+
+					return m, nil
+				}
+
 				m.textInputActive = false
 				return m, nil
+
+			case "up", "down":
+				m.textInputActive = false
+				m.commandMode = false
+				return m, nil
+
 			case "esc":
 				m.textInputActive = false
+				m.commandMode = false
 				m.textInput.SetValue("")
-				m.tableData = m.originalData
-				m.selected = 0
-				m.offset = 0
+
+				if !m.commandMode {
+					m.tableData = m.originalData
+					m.selected = 0
+					m.offset = 0
+				}
+
 				return m, nil
 			}
 		}
+
 		var cmd tea.Cmd
 		m.textInput, cmd = m.textInput.Update(msg)
-		filter := m.textInput.Value()
-		if filter == "" {
-			m.tableData = m.originalData
-		} else {
-			if re, err := regexp.Compile(filter); err != nil {
+
+		if !m.commandMode {
+			filter := m.textInput.Value()
+			if filter == "" {
 				m.tableData = m.originalData
 			} else {
-				var filtered []TableInfo
-				for _, row := range m.originalData {
-					if re.MatchString(row.Name) {
-						filtered = append(filtered, row)
+				if re, err := regexp.Compile(filter); err != nil {
+					m.tableData = m.originalData
+				} else {
+					var filtered []TableInfo
+					for _, row := range m.originalData {
+						if re.MatchString(row.Name) {
+							filtered = append(filtered, row)
+						}
 					}
+					m.tableData = filtered
 				}
-				m.tableData = filtered
 			}
+			m.selected = 0
+			m.offset = 0
 		}
-		m.selected = 0
-		m.offset = 0
+
 		return m, cmd
 	}
 
 	switch msg := msg.(type) {
 	case errMsg:
 		m.err = msg
-		// Mostrar o erro e retornar para a lista quando qualquer tecla for pressionada
 		return m, nil
 
 	case tea.WindowSizeMsg:
@@ -200,7 +229,6 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// Se há um erro sendo exibido, qualquer tecla limpa o erro
 		if m.err != nil {
 			m.err = nil
 			return m, nil
@@ -209,8 +237,23 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "/":
 			m.textInputActive = true
+			m.commandMode = false
+			m.textInput.Prompt = "/"
+			m.textInput.Placeholder = "regex filter"
 			m.textInput.Focus()
+			m.statusMessage = ""
 			return m, nil
+
+		case ":":
+			m.textInputActive = true
+			m.commandMode = true
+			m.textInput.SetValue("")
+			m.textInput.Prompt = ":"
+			m.textInput.Placeholder = "command"
+			m.textInput.Focus()
+			m.statusMessage = ""
+			return m, nil
+
 		case "esc":
 			if len(m.tableData) != len(m.originalData) {
 				m.tableData = m.originalData
@@ -262,6 +305,8 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		// Clear status message on any other key press
+		m.statusMessage = ""
 		return m, nil
 
 	default:
@@ -338,8 +383,9 @@ func (m modelList) View() string {
 		sb.WriteString("\n")
 	}
 
-	// Exibir mensagem de erro na barra de status se existir, caso contrário exibir status normal
-	if m.err != nil {
+	if m.statusMessage != "" {
+		sb.WriteString(errorStatusBarStyle.Render(m.statusMessage))
+	} else if m.err != nil {
 		statusText := fmt.Sprintf("Error: %v (Press any key to continue)", m.err)
 		sb.WriteString(errorStatusBarStyle.Render(statusText))
 	} else {

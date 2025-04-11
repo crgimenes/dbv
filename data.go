@@ -90,16 +90,16 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key.Type {
 			case tea.KeyEnter:
 				m.lastCommand = m.cmdInput.Value()
+				cmd := m.cmdInput.Value()
+				m.commandMode = false
 				switch {
-				case m.cmdInput.Value() == "q":
+				case cmd == "q":
 					return m, tea.Quit
-				case strings.HasPrefix(m.cmdInput.Value(), "where"):
+				case strings.HasPrefix(cmd, "where"):
 					m.whereCondition = strings.TrimSpace(
 						strings.TrimPrefix(m.cmdInput.Value(), "where"))
-					m.commandMode = false
 					return m, m.resetTable()
-				case m.cmdInput.Value() == "insert":
-					m.commandMode = false
+				case cmd == "insert":
 					insertSQL, err := db.Storage.CreateInsertStatement(m.tableName)
 					if err != nil {
 						m.showingError = true
@@ -108,8 +108,7 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.editor.StartMultiEditing(insertSQL, m.windowWidth, m.windowHeight, "insert")
 					return m, nil
-				case m.cmdInput.Value() == "struct":
-					m.commandMode = false
+				case cmd == "struct":
 					structDefinition, err := db.Storage.CreateGoStructDefinition(m.tableName)
 					if err != nil {
 						m.showingError = true
@@ -118,8 +117,7 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.editor.StartMultiEditing(structDefinition, m.windowWidth, m.windowHeight, "struct")
 					return m, nil
-				case m.cmdInput.Value() == "json":
-					m.commandMode = false
+				case cmd == "json":
 					jsonDefinition, err := m.editor.createJSONStructure(&m)
 					if err != nil {
 						m.showingError = true
@@ -128,13 +126,12 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.editor.StartMultiEditing(jsonDefinition, m.windowWidth, m.windowHeight, "json")
 					return m, nil
-				case m.cmdInput.Value() == "update":
+				case cmd == "update":
 					if m.pk == "" || m.pk == "-" {
 						m.showingError = true
 						m.errorMessage = "Update not allowed, no primary key defined"
 						return m, nil
 					}
-					m.commandMode = false
 					updateSQL, err := db.Storage.CreateUpdateStatement(m.tableName, m.data[0], m.data[m.selectedRow])
 					if err != nil {
 						m.showingError = true
@@ -143,6 +140,11 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.editor.StartMultiEditing(updateSQL, m.windowWidth, m.windowHeight, "update")
 				default:
+					if cmd == "" {
+						m.lastCommand = ""
+						return m, nil
+					}
+
 					m.showingError = true
 					m.errorMessage = fmt.Sprintf("Unrecognized command: %s", m.cmdInput.Value())
 					m.commandMode = false
