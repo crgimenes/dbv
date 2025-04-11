@@ -19,7 +19,7 @@ var (
 )
 
 func (l *Lua) fromGoToLua(v any) lua.LValue {
-	switch v := v.(type) { // ajustado para vinculação
+	switch v := v.(type) { // adjusted for binding
 	case int:
 		return lua.LNumber(v)
 	case uint:
@@ -97,7 +97,7 @@ func fromLuaToGo(v lua.LValue) (any, error) {
 func (l *Lua) mapToLuaTable(m map[string]any) *lua.LTable {
 	table := l.ls.NewTable()
 	for k, v := range m {
-		switch v := v.(type) { // ajustado para vinculação
+		switch v := v.(type) { // adjusted for binding
 		case int:
 			table.RawSetString(k, lua.LNumber(v))
 		case float64:
