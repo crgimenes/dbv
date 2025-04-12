@@ -391,7 +391,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.modelData.windowWidth = m.modelList.windowWidth
 		m.modelData.windowHeight = m.modelList.windowHeight
-		m.modelData.editor = newModelEditor()
 
 		m.currentScreen = screenData
 		return m, nil
@@ -477,7 +476,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.modelData.windowWidth = m.modelList.windowWidth
 		m.modelData.windowHeight = m.modelList.windowHeight
-		m.modelData.editor = newModelEditor()
 
 		m.currentScreen = screenData
 		return m, nil

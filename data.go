@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -43,7 +42,7 @@ type modelData struct {
 	windowWidth   int
 	windowHeight  int
 
-	editor *modelEditor
+	currentEditType ExternalEditType
 
 	commandMode bool
 	cmdInput    textinput.Model
@@ -78,11 +77,6 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.editor.IsMultiEditing() {
-		_, cmd := m.editor.UpdateEditor(msg, &m)
-		return m, cmd
-	}
-
 	if m.commandMode {
 		var cmd tea.Cmd
 		m.cmdInput, cmd = m.cmdInput.Update(msg)
@@ -106,8 +100,8 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.errorMessage = err.Error()
 						return m, nil
 					}
-					m.editor.StartMultiEditing(insertSQL, m.windowWidth, m.windowHeight, "insert")
-					return m, nil
+					m.currentEditType = InsertEdit
+					return m, openEditorWithContent(insertSQL, InsertEdit)
 				case cmd == "struct":
 					structDefinition, err := db.Storage.CreateGoStructDefinition(m.tableName)
 					if err != nil {
@@ -115,17 +109,17 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.errorMessage = err.Error()
 						return m, nil
 					}
-					m.editor.StartMultiEditing(structDefinition, m.windowWidth, m.windowHeight, "struct")
-					return m, nil
+					m.currentEditType = StructEdit
+					return m, openEditorWithContent(structDefinition, StructEdit)
 				case cmd == "json":
-					jsonDefinition, err := m.editor.createJSONStructure(&m)
+					jsonDefinition, err := createJSONStructure(&m)
 					if err != nil {
 						m.showingError = true
 						m.errorMessage = err.Error()
 						return m, nil
 					}
-					m.editor.StartMultiEditing(jsonDefinition, m.windowWidth, m.windowHeight, "json")
-					return m, nil
+					m.currentEditType = JsonEdit
+					return m, openEditorWithContent(jsonDefinition, JsonEdit)
 				case cmd == "update":
 					if m.pk == "" || m.pk == "-" {
 						m.showingError = true
@@ -138,7 +132,8 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.errorMessage = err.Error()
 						return m, nil
 					}
-					m.editor.StartMultiEditing(updateSQL, m.windowWidth, m.windowHeight, "update")
+					m.currentEditType = UpdateEdit
+					return m, openEditorWithContent(updateSQL, UpdateEdit)
 				default:
 					if cmd == "" {
 						m.lastCommand = ""
@@ -216,11 +211,7 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showingError = true
 			m.errorMessage = msg.err.Error()
 		} else if msg.changed {
-			if m.pk != "" && m.pk != "-" {
-				m.editor.updateCellValue(&m, msg.newText)
-			} else {
-				m.data[m.selectedRow][m.selectedCol] = msg.newText
-			}
+			handleExternalEditorReturn(&m, msg, m.currentEditType)
 		}
 		return m, nil
 
@@ -285,7 +276,8 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter", "e":
 			if len(m.data) > m.selectedRow && m.selectedRow >= 0 && len(m.data[m.selectedRow]) > m.selectedCol && m.selectedCol >= 0 {
 				cellContent := m.data[m.selectedRow][m.selectedCol]
-				m.editor.StartMultiEditing(cellContent, m.windowWidth, m.windowHeight, "cell")
+				m.currentEditType = CellEdit
+				return m, openEditorWithContent(cellContent, CellEdit)
 			}
 		case ":":
 			m.commandMode = true
@@ -305,6 +297,7 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.selectedRow == 0 {
 				m.selectedRow = 1
 			}
+			m.currentEditType = CellEdit
 			return m, openExternalEditor(m.data[m.selectedRow][m.selectedCol])
 		case "p":
 			if m.selectedRow == 0 {
@@ -322,7 +315,8 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errorMessage = err.Error()
 				return m, nil
 			}
-			m.editor.StartMultiEditing(insertSQL, m.windowWidth, m.windowHeight, "insert")
+			m.currentEditType = InsertEdit
+			return m, openEditorWithContent(insertSQL, InsertEdit)
 		case "S":
 			structDefinition, err := db.Storage.CreateGoStructDefinition(m.tableName)
 			if err != nil {
@@ -330,15 +324,17 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errorMessage = err.Error()
 				return m, nil
 			}
-			m.editor.StartMultiEditing(structDefinition, m.windowWidth, m.windowHeight, "struct")
+			m.currentEditType = StructEdit
+			return m, openEditorWithContent(structDefinition, StructEdit)
 		case "J":
-			jsonDefinition, err := m.editor.createJSONStructure(&m)
+			jsonDefinition, err := createJSONStructure(&m)
 			if err != nil {
 				m.showingError = true
 				m.errorMessage = err.Error()
 				return m, nil
 			}
-			m.editor.StartMultiEditing(jsonDefinition, m.windowWidth, m.windowHeight, "json")
+			m.currentEditType = JsonEdit
+			return m, openEditorWithContent(jsonDefinition, JsonEdit)
 		case "U":
 			if m.pk == "" || m.pk == "-" {
 				m.showingError = true
@@ -351,9 +347,8 @@ func (m modelData) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errorMessage = err.Error()
 				return m, nil
 			}
-			m.commandMode = false
-			m.editor.StartMultiEditing(updateSQL, m.windowWidth, m.windowHeight, "update")
-			return m, nil
+			m.currentEditType = UpdateEdit
+			return m, openEditorWithContent(updateSQL, UpdateEdit)
 		}
 	}
 
@@ -441,48 +436,6 @@ func (m modelData) View() string {
 		m.windowHeight = 24
 	}
 
-	if m.editor.IsMultiEditing() {
-		taLines := strings.Split(m.editor.textArea.View(), "\n")
-		availableTAHeight := m.windowHeight - 3
-		for len(taLines) < availableTAHeight {
-			taLines = append(taLines, "")
-		}
-
-		title := m.tableName
-		if title == "" {
-			title = "No table selected"
-		}
-
-		switch m.editor.editMode {
-		case "insert":
-			title += " (SQL Insert)"
-		case "cell":
-			title += " (Cell Edit)"
-		case "struct":
-			title += " (Go Struct)"
-		case "json":
-			title += " (JSON Structure)"
-		case "update":
-			title += " (SQL Update)"
-		}
-
-		title = titleStyle.Render(title)
-
-		outputLines := []string{title}
-		outputLines = append(outputLines, taLines...)
-
-		// Check if this is a user-defined view (read-only mode)
-		statusBarText := "crtl+o open external editor, ESC: cancel"
-		if m.editor.editMode == "cell" || m.editor.editMode == "insert" || m.editor.editMode == "update" {
-			// Only show ctrl+s option for editable modes when not in read-only mode
-			if m.pk != "-" {
-				statusBarText = "ctrl+s: save, crtl+o open external editor, ESC: cancel"
-			}
-		}
-		outputLines = append(outputLines, statusBarStyle.Render(statusBarText), "")
-		return strings.Join(outputLines, "\n")
-	}
-
 	var outputLines []string
 	title := m.tableName
 	if title == "" {
@@ -494,7 +447,7 @@ func (m modelData) View() string {
 	if len(m.data) > 0 && len(m.data[0]) > 0 {
 		title += fmt.Sprintf(" | %d columns", len(m.data[0]))
 	}
-	title += title + fmt.Sprintf(" [%s]", DBTitle)
+	title += fmt.Sprintf(" [%s]", DBTitle)
 	if len(title) > m.windowWidth {
 		title = title[:m.windowWidth-3] + "..."
 	}
@@ -910,30 +863,4 @@ func openExternalEditor(initialText string) tea.Cmd {
 }
 func openExternalPager(initialText string) tea.Cmd {
 	return createExternalProcessCmd(initialText, "pager")
-}
-
-func (me *modelEditor) createJSONStructure(m *modelData) (string, error) {
-	if m.selectedRow < 1 || m.selectedRow >= len(m.data) {
-		return "", fmt.Errorf("nenhum registro selecionado")
-	}
-	cols := m.data[0]
-	row := m.data[m.selectedRow]
-	record := make(map[string]any)
-
-	for i, colName := range cols {
-		val := row[i]
-		if f, err := strconv.ParseFloat(val, 64); err == nil {
-			record[colName] = f
-		} else if val == "NULL" {
-			record[colName] = nil
-		} else {
-			record[colName] = val
-		}
-	}
-
-	output, err := json.MarshalIndent(record, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return string(output), nil
 }
