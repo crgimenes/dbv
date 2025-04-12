@@ -30,8 +30,9 @@ type ResponseError struct {
 }
 
 type CompletionItem struct {
-	Label string `json:"label"`
-	Kind  int    `json:"kind"`
+	Label  string `json:"label"`
+	Kind   int    `json:"kind"`
+	Detail string `json:"detail,omitempty"`
 }
 
 type Position struct {
