@@ -1,109 +1,62 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"log"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/crgimenes/dbv/db"
 )
 
-type modelEditor struct {
-	multiEditing bool
-	textArea     textarea.Model
-	editMode     string // "cell" or "insert"
-}
+type ExternalEditType string
 
-func newModelEditor() *modelEditor {
-	return &modelEditor{
-		editMode: "cell",
+const (
+	CellEdit   ExternalEditType = "cell"
+	InsertEdit ExternalEditType = "insert"
+	UpdateEdit ExternalEditType = "update"
+	StructEdit ExternalEditType = "struct"
+	JsonEdit   ExternalEditType = "json"
+)
+
+func handleExternalEditorReturn(m *modelData, msg externalEditorMsg, editType ExternalEditType) bool {
+	if msg.err != nil {
+		m.showingError = true
+		m.errorMessage = fmt.Sprintf("Erro no editor externo: %v", msg.err)
+		return false
+	}
+
+	if !msg.changed {
+		// nothing changed
+		return false
+	}
+
+	switch editType {
+	case CellEdit:
+		return updateCellValue(m, msg.newText)
+	case InsertEdit, UpdateEdit:
+		sql := msg.newText
+		err := db.Storage.Exec(sql)
+		if err != nil {
+			m.showingError = true
+			m.errorMessage = fmt.Sprintf("Erro executando: %v", err)
+			return false
+		}
+		m.resetTable()
+		return true
+	default:
+		// StructEdit and JsonEdit (noting to do)
+		return true
 	}
 }
 
-func (me *modelEditor) IsMultiEditing() bool {
-	return me.multiEditing
-}
-
-func (me *modelEditor) StartMultiEditing(initialValue string, width, height int, mode string) {
-	ta := textarea.New()
-	ta.SetWidth(width - 2)
-	ta.SetHeight(height - 3)
-	ta.MaxHeight = 0
-	ta.Focus()
-
-	ta.CharLimit = 9437184
-	ta.SetValue(initialValue)
-	ta.Prompt = ""
-	ta.ShowLineNumbers = false
-
-	me.textArea = ta
-	me.multiEditing = true
-	me.editMode = mode
-}
-
-func (me *modelEditor) UpdateEditor(msg tea.Msg, m *modelData) (bool, tea.Cmd) {
-	if me.multiEditing {
-		var cmd tea.Cmd
-		me.textArea, cmd = me.textArea.Update(msg)
-		if key, ok := msg.(tea.KeyMsg); ok {
-			switch key.Type {
-			case tea.KeyCtrlS:
-				switch me.editMode {
-				case "cell":
-					if me.updateCellValue(m, me.textArea.Value()) {
-						me.multiEditing = false
-					}
-				case "insert":
-					sql := me.textArea.Value()
-					err := db.Storage.Exec(sql)
-					if err != nil {
-						m.showingError = true
-						m.errorMessage = fmt.Sprintf("Error executing: %v", err)
-					} else {
-						me.multiEditing = false
-						return false, m.resetTable()
-					}
-				case "update":
-					sql := me.textArea.Value()
-					err := db.Storage.Exec(sql)
-					if err != nil {
-						m.showingError = true
-						m.errorMessage = fmt.Sprintf("Error executing: %v", err)
-					} else {
-						me.multiEditing = false
-						return false, m.resetTable()
-					}
-				}
-			case tea.KeyCtrlO:
-				return me.multiEditing, openExternalEditor(me.textArea.Value())
-			case tea.KeyEsc:
-				me.multiEditing = false
-			}
-		}
-
-		switch x := msg.(type) {
-		case externalEditorMsg:
-			if x.err != nil {
-				m.showingError = true
-				m.errorMessage = x.err.Error()
-			} else {
-				me.textArea.SetValue(x.newText)
-			}
-		}
-		return me.multiEditing, cmd
-	}
-
-	return false, nil
-}
-
-func (me *modelEditor) updateCellValue(m *modelData, newValue string) bool {
+func updateCellValue(m *modelData, newValue string) bool {
 	if m.pk == "" || m.pk == "-" {
 		m.showingError = true
-		m.errorMessage = "Read-only mode"
+		m.errorMessage = "Readonly, primary key not detected"
 		return false
 	}
 
@@ -114,7 +67,7 @@ func (me *modelEditor) updateCellValue(m *modelData, newValue string) bool {
 				formatted, errConv := formatTimestamp(newValue)
 				if errConv != nil {
 					m.showingError = true
-					m.errorMessage = fmt.Sprintf("Error converting timestamp: %v", errConv)
+					m.errorMessage = fmt.Sprintf("Erro convertendo timestamp: %v", errConv)
 					return false
 				}
 				updatedValue = formatted
@@ -131,7 +84,7 @@ func (me *modelEditor) updateCellValue(m *modelData, newValue string) bool {
 	pks, err := db.Storage.GetPrimaryKeyColumns(m.tableName)
 	if err != nil {
 		m.showingError = true
-		m.errorMessage = fmt.Sprintf("Error getting primary key columns: %v", err)
+		m.errorMessage = fmt.Sprintf("Error getting primary keys: %v", err)
 		return false
 	}
 
@@ -153,10 +106,8 @@ func (me *modelEditor) updateCellValue(m *modelData, newValue string) bool {
 	)
 
 	if err != nil {
-		log.Println("Error updating cell:", err)
-
 		m.showingError = true
-		m.errorMessage = fmt.Sprintf("Error updating: %v", err)
+		m.errorMessage = fmt.Sprintf("Error updating cell: %v", err)
 		return false
 	}
 
@@ -171,5 +122,38 @@ func formatTimestamp(input string) (string, error) {
 	if t, err := time.Parse("2006-01-02 15:04:05.999999 -0700 MST", input); err == nil {
 		return t.Format(time.RFC3339), nil
 	}
-	return "", fmt.Errorf("unable to parse timestamp: %s", input)
+	return "", fmt.Errorf("invalid timestamp format for: %s", input)
+}
+
+func openEditorWithContent(content string, editType ExternalEditType) tea.Cmd {
+	return func() tea.Msg {
+		return openExternalEditor(content)()
+	}
+}
+
+func createJSONStructure(m *modelData) (string, error) {
+	if m.selectedRow < 1 || m.selectedRow >= len(m.data) {
+		return "", fmt.Errorf("nenhum registro selecionado")
+	}
+
+	cols := m.data[0]
+	row := m.data[m.selectedRow]
+	record := make(map[string]any)
+
+	for i, colName := range cols {
+		val := row[i]
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			record[colName] = f
+		} else if val == "NULL" {
+			record[colName] = nil
+		} else {
+			record[colName] = val
+		}
+	}
+
+	output, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
 }

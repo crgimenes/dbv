@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,18 +17,7 @@ import (
 	"github.com/crgimenes/dbv/lua"
 )
 
-const (
-	recordsPerPage = 200
-)
-
-// Tipos de tela
 type screen int
-
-const (
-	screenList screen = iota
-	screenData
-	screenForm
-)
 
 type errMsg error
 
@@ -37,10 +27,17 @@ type menuModel struct {
 	chosen   int
 }
 
+const (
+	screenList screen = iota
+	screenData
+	screenForm
+
+	recordsPerPage = 200
+)
+
 var (
-	GitTag  = "v0.0.0"
-	DBTitle = "-"
-	// new global variable to hold the views directory (if any)
+	GitTag       = "v0.0.0"
+	DBTitle      = "-"
 	userViewsDir string
 
 	themeBackground = lipgloss.Color("#000000")
@@ -79,20 +76,17 @@ var (
 			Bold(true)
 )
 
-// showUserViewDataMsg is the message sent after executing a user-defined view
 type showUserViewDataMsg struct {
 	viewName string
 	sql      string
 }
 
-// showUserViewFormMsg is the message sent when a user-defined view has parameters
 type showUserViewFormMsg struct {
 	viewName string
 	sql      string
 	params   []Parameter
 }
 
-// formResultMsg is the message sent after filling out the form
 type formResultMsg struct {
 	viewName string
 	sql      string
@@ -288,10 +282,9 @@ func runLuaFile(name string) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		userViewsDir = configs[0].ViewsPath // new assignment
+		userViewsDir = configs[0].ViewsPath
 	}
 
-	// if there are multiple databases, show a menu to select one
 	if len(configs) > 1 {
 		menu := menuModel{choices: configs, selected: 0, chosen: -1}
 		finalModel, err := tea.NewProgram(menu).Run()
@@ -308,7 +301,7 @@ func runLuaFile(name string) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		userViewsDir = configs[chosenMenu.chosen].ViewsPath // new assignment
+		userViewsDir = configs[chosenMenu.chosen].ViewsPath
 	}
 
 }
@@ -391,7 +384,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.modelData.windowWidth = m.modelList.windowWidth
 		m.modelData.windowHeight = m.modelList.windowHeight
-		m.modelData.editor = newModelEditor()
 
 		m.currentScreen = screenData
 		return m, nil
@@ -417,7 +409,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// If there are no parameters, execute the query directly
 		return m, func() tea.Msg {
 			return showUserViewDataMsg{
 				viewName: msg.name,
@@ -426,7 +417,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case formResultMsg:
-		// When the form is submitted, execute the query
 		return m, func() tea.Msg {
 			return showUserViewDataMsg{
 				viewName: msg.viewName,
@@ -435,10 +425,8 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case showUserViewDataMsg:
-		// Execute the SQL query and display the results
 		records, columnInfo, err := db.Storage.QuerySQL(msg.sql)
 		if err != nil {
-			// When there's a SQL execution error, return to list with error message
 			m.currentScreen = screenList
 			return m, tea.Cmd(func() tea.Msg {
 				return errMsg(fmt.Errorf("error executing query: %w", err))
@@ -477,7 +465,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.modelData.windowWidth = m.modelList.windowWidth
 		m.modelData.windowHeight = m.modelList.windowHeight
-		m.modelData.editor = newModelEditor()
 
 		m.currentScreen = screenData
 		return m, nil
@@ -504,9 +491,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.formModel = formModel
 
 		if formModel.submitted {
-			// When the form is submitted, execute the query directly
-			// without transitioning back to the list screen first
-			m.currentScreen = screenData // Set directly to data screen
+			m.currentScreen = screenData
 			return m, func() tea.Msg {
 				return showUserViewDataMsg{
 					viewName: formModel.screenTitle,
@@ -516,7 +501,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if formModel.abandoned {
-			// If the user cancels the form, return to the list
 			m.currentScreen = screenList
 		}
 
@@ -539,7 +523,18 @@ func (m rootModel) View() string {
 }
 
 func main() {
+	const selectorOutputFile = "/tmp/dbv_output.txt"
 	log.SetFlags(log.LstdFlags | log.Llongfile)
+
+	useSelectorMode := false
+
+	if slices.Contains(os.Args[1:], "-s") {
+		index := slices.Index(os.Args[1:], "-s")
+		if index != -1 {
+			os.Args = slices.Delete(os.Args, index, index+1)
+		}
+		useSelectorMode = true
+	}
 
 	initFile := getInitLuaPath()
 	if fileExists(initFile) {
@@ -559,22 +554,32 @@ func main() {
 	if len(os.Args) > 1 {
 		for _, runFile := range os.Args[1:] {
 			if !fileExists(runFile) {
-				log.Fatalf("file not found: %s", runFile)
+				log.Fatalf("file not found: %q", runFile)
 			}
 			log.Printf("running %s", runFile)
 			runLuaFile(runFile)
 		}
 	}
 
-	p := tea.NewProgram(
-		rootModel{
-			currentScreen: screenList,
-			modelList:     initialModelList(),
-			modelData:     modelData{},
-			formModel:     formModel{},
-		},
-		tea.WithAltScreen(),
-	)
+	var p *tea.Program
+	if useSelectorMode {
+		// Selector mode
+		p = tea.NewProgram(
+			initialModelSelector(selectorOutputFile),
+			tea.WithAltScreen(),
+		)
+	} else {
+		// Default mode
+		p = tea.NewProgram(
+			rootModel{
+				currentScreen: screenList,
+				modelList:     initialModelList(),
+				modelData:     modelData{},
+				formModel:     formModel{},
+			},
+			tea.WithAltScreen(),
+		)
+	}
 
 	_, err := p.Run()
 	if err != nil {
