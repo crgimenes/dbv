@@ -563,6 +563,23 @@ func main() {
 
 	var p *tea.Program
 	if useSelectorMode {
+
+		// create output file if it does not exist
+		_, err := os.Stat(selectorOutputFile)
+		if os.IsNotExist(err) {
+			f, err := os.Create(selectorOutputFile)
+			if err != nil {
+				log.Fatalf("failed to create file: %v", err)
+			}
+			f.Close()
+		}
+
+		// truncate the file
+		err = os.Truncate(selectorOutputFile, 0)
+		if err != nil {
+			log.Fatalf("failed to truncate file: %v", err)
+		}
+
 		// Selector mode
 		p = tea.NewProgram(
 			initialModelSelector(selectorOutputFile),
