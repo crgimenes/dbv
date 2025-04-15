@@ -32,7 +32,6 @@ type modelSelector struct {
 	windowHeight     int
 	offset           int
 	fieldOffset      int
-	filter           string
 	textInput        textinput.Model
 	textInputActive  bool
 	statusMessage    string
@@ -236,6 +235,25 @@ func (m modelSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+		case "S":
+			if m.currentMode == tableSelectMode && len(m.tables) > 0 {
+				tableName := m.tables[m.selectedRow].Name
+				structDefinition, err := db.Storage.CreateGoStructDefinition(tableName)
+				if err != nil {
+					m.err = err
+					return m, nil
+				}
+
+				err = os.WriteFile(m.outputFile, []byte(structDefinition), 0644)
+				if err != nil {
+					m.err = err
+					return m, nil
+				}
+
+				m.statusMessage = fmt.Sprintf("Struct %s written to %s", tableName, m.outputFile)
+			}
+			return m, nil
+
 		case " ", "s":
 			var text string
 			if m.currentMode == tableSelectMode && len(m.tables) > 0 {
@@ -338,7 +356,7 @@ func (m modelSelector) View() string {
 				maxNameWidth = len(field.ColumnName)
 			}
 		}
-		maxNameWidth = min(maxNameWidth, nameWidth)
+		//maxNameWidth = min(maxNameWidth, nameWidth)
 
 		for i := m.fieldOffset; i < visibleEnd; i++ {
 			field := m.fields[i]
@@ -350,12 +368,12 @@ func (m modelSelector) View() string {
 					selIndicator,
 					rowHighlight.Render(formatLeft(field.ColumnName, nameWidth)),
 					rowHighlight.Render(formatLeft(field.DataType, typeWidth))))
-			} else {
-				sb.WriteString(fmt.Sprintf("%s%s  %s\n",
-					selIndicator,
-					tableCellStyle.Render(formatLeft(field.ColumnName, nameWidth)),
-					tableCellStyle.Render(formatLeft(field.DataType, typeWidth))))
+				continue
 			}
+			sb.WriteString(fmt.Sprintf("%s%s  %s\n",
+				selIndicator,
+				tableCellStyle.Render(formatLeft(field.ColumnName, nameWidth)),
+				tableCellStyle.Render(formatLeft(field.DataType, typeWidth))))
 		}
 
 		for i := visibleEnd - m.fieldOffset; i < fieldDataArea; i++ {
