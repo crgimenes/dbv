@@ -20,23 +20,25 @@ const (
 )
 
 type modelSelector struct {
-	currentMode      selectorMode
-	originalTables   []TableInfo
-	tables           []TableInfo
-	originalFields   []db.ColumnInfo
-	fields           []db.ColumnInfo
-	selectedTable    string
-	selectedRow      int
-	selectedFieldRow int
-	windowWidth      int
-	windowHeight     int
-	offset           int
-	fieldOffset      int
-	textInput        textinput.Model
-	textInputActive  bool
-	statusMessage    string
-	err              error
-	outputFile       string
+	currentMode       selectorMode
+	originalTables    []TableInfo
+	tables            []TableInfo
+	originalFields    []db.ColumnInfo
+	fields            []db.ColumnInfo
+	selectedTable     string
+	selectedRow       int
+	selectedFieldRow  int
+	windowWidth       int
+	windowHeight      int
+	offset            int
+	fieldOffset       int
+	textInput         textinput.Model
+	textInputActive   bool
+	commandMode       bool
+	commandInputValue string
+	statusMessage     string
+	err               error
+	outputFile        string
 }
 
 func initialModelSelector(outputFile string) modelSelector {
@@ -92,11 +94,29 @@ func (m modelSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyMsg:
 			switch msg.String() {
 			case "enter":
+				if m.commandMode {
+					cmd := m.textInput.Value()
+					m.commandInputValue = cmd
+					m.textInputActive = false
+					m.commandMode = false
+
+					if cmd == "q" || cmd == "Q" || cmd == "quit" {
+						return m, tea.Quit
+					}
+
+					if cmd != "" {
+						m.statusMessage = fmt.Sprintf("Unknown command: %q", cmd)
+					}
+
+					return m, nil
+				}
+
 				m.textInputActive = false
 				return m, nil
 
 			case "up", "down", "esc":
 				m.textInputActive = false
+				m.commandMode = false
 				// Se ESC, limpar o filtro
 				if msg.String() == "esc" {
 					m.textInput.SetValue("")
@@ -117,39 +137,41 @@ func (m modelSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.textInput, cmd = m.textInput.Update(msg)
 
-		filter := m.textInput.Value()
-		if m.currentMode == tableSelectMode {
-			if filter == "" {
-				m.tables = m.originalTables
-			} else {
-				if re, err := regexp.Compile(filter); err == nil {
-					var filtered []TableInfo
-					for _, row := range m.originalTables {
-						if re.MatchString(row.Name) {
-							filtered = append(filtered, row)
+		if !m.commandMode {
+			filter := m.textInput.Value()
+			if m.currentMode == tableSelectMode {
+				if filter == "" {
+					m.tables = m.originalTables
+				} else {
+					if re, err := regexp.Compile(filter); err == nil {
+						var filtered []TableInfo
+						for _, row := range m.originalTables {
+							if re.MatchString(row.Name) {
+								filtered = append(filtered, row)
+							}
 						}
+						m.tables = filtered
 					}
-					m.tables = filtered
 				}
-			}
-			m.selectedRow = 0
-			m.offset = 0
-		} else {
-			if filter == "" {
-				m.fields = m.originalFields
+				m.selectedRow = 0
+				m.offset = 0
 			} else {
-				if re, err := regexp.Compile(filter); err == nil {
-					var filtered []db.ColumnInfo
-					for _, field := range m.originalFields {
-						if re.MatchString(field.ColumnName) {
-							filtered = append(filtered, field)
+				if filter == "" {
+					m.fields = m.originalFields
+				} else {
+					if re, err := regexp.Compile(filter); err == nil {
+						var filtered []db.ColumnInfo
+						for _, field := range m.originalFields {
+							if re.MatchString(field.ColumnName) {
+								filtered = append(filtered, field)
+							}
 						}
+						m.fields = filtered
 					}
-					m.fields = filtered
 				}
+				m.selectedFieldRow = 0
+				m.fieldOffset = 0
 			}
-			m.selectedFieldRow = 0
-			m.fieldOffset = 0
 		}
 
 		return m, cmd
@@ -174,8 +196,19 @@ func (m modelSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "/":
 			m.textInputActive = true
+			m.commandMode = false
 			m.textInput.Prompt = "/"
 			m.textInput.Placeholder = "regex filter"
+			m.textInput.Focus()
+			m.statusMessage = ""
+			return m, nil
+
+		case ":":
+			m.textInputActive = true
+			m.commandMode = true
+			m.textInput.SetValue("")
+			m.textInput.Prompt = ":"
+			m.textInput.Placeholder = "command"
 			m.textInput.Focus()
 			m.statusMessage = ""
 			return m, nil
