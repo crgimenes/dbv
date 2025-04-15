@@ -254,6 +254,25 @@ func (m modelSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
+		case "I":
+			if m.currentMode == tableSelectMode && len(m.tables) > 0 {
+				tableName := m.tables[m.selectedRow].Name
+				insertSQL, err := db.Storage.CreateInsertStatement(tableName)
+				if err != nil {
+					m.err = err
+					return m, nil
+				}
+
+				err = os.WriteFile(m.outputFile, []byte(insertSQL), 0644)
+				if err != nil {
+					m.err = err
+					return m, nil
+				}
+
+				m.statusMessage = fmt.Sprintf("INSERT SQL for %s written to %s", tableName, m.outputFile)
+			}
+			return m, nil
+
 		case " ", "s":
 			var text string
 			if m.currentMode == tableSelectMode && len(m.tables) > 0 {
