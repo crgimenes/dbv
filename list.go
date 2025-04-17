@@ -85,9 +85,35 @@ func formatRight(s string, width int) string {
 }
 
 func initialModelList() modelList {
+	data, err := getTableList()
+	if err != nil {
+		return modelList{
+			err: err,
+		}
+	}
+
+	ti := textinput.New()
+	ti.Prompt = "/"
+	ti.Placeholder = "regex filter"
+	ti.CharLimit = 256
+	ti.Width = 20
+
+	return modelList{
+		originalData:    data,
+		tableData:       data,
+		selected:        0,
+		offset:          0,
+		textInput:       ti,
+		textInputActive: false,
+		commandMode:     false,
+		statusMessage:   "",
+	}
+}
+
+func getTableList() ([]TableInfo, error) {
 	lt, err := db.Storage.ListTablesAndViews()
 	if err != nil {
-		return modelList{err: err}
+		return nil, err
 	}
 
 	data := make([]TableInfo, len(lt))
@@ -122,23 +148,7 @@ func initialModelList() modelList {
 			data = append(views, data...)
 		}
 	}
-
-	ti := textinput.New()
-	ti.Prompt = "/"
-	ti.Placeholder = "regex filter"
-	ti.CharLimit = 256
-	ti.Width = 20
-
-	return modelList{
-		originalData:    data,
-		tableData:       data,
-		selected:        0,
-		offset:          0,
-		textInput:       ti,
-		textInputActive: false,
-		commandMode:     false,
-		statusMessage:   "",
-	}
+	return data, nil
 }
 
 func (m modelList) Init() tea.Cmd {
@@ -175,6 +185,16 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInputActive = false
 					m.textInput.SetValue("")
 					m.tableData = m.originalData
+
+					// TODO: Refresh the table data
+					data, err := getTableList()
+					if err != nil {
+						m.statusMessage = fmt.Sprintf("Failed to refresh table list: %v", err)
+						return m, nil
+					}
+					m.originalData = data
+					m.tableData = data
+
 					return m, nil
 				}
 
