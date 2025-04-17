@@ -834,7 +834,7 @@ func (pg *Postgres) RenameTable(oldName, newName string) error {
 
 	_, err := pg.DB.Exec(query)
 	if err != nil {
-		return fmt.Errorf("error renaming table: %w SQL: %w", err, query)
+		return fmt.Errorf("error renaming table: %w SQL: %s", err, query)
 	}
 	return nil
 }
