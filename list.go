@@ -21,9 +21,17 @@ type TableInfo struct {
 	PrimaryKey string
 }
 
+const (
+	CommandRename = "rename"
+	CommandClear  = "clear"
+	CommandHelp   = "help"
+	CommandQuit   = "quit"
+)
+
 type modelList struct {
 	commandInputValue string
 	commandMode       bool
+	currentCommand    string
 	err               error
 	offset            int
 	originalData      []TableInfo
@@ -143,6 +151,33 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyMsg:
 			switch msg.String() {
 			case "enter":
+
+				// Handle renaming a table
+				if m.commandMode && m.currentCommand == CommandRename {
+					m.commandMode = false
+					m.currentCommand = ""
+
+					newName := m.textInput.Value()
+					oldName := m.tableData[m.selected].Name
+					if newName == "" || newName == oldName {
+						m.statusMessage = "Invalid or same table name"
+						return m, nil
+					}
+					err := db.Storage.RenameTable(
+						oldName,
+						newName,
+					)
+					if err != nil {
+						m.statusMessage = fmt.Sprintf("Failed to rename table: %v", err)
+						return m, nil
+					}
+					m.statusMessage = fmt.Sprintf("Table '%s' renamed to '%s'", oldName, newName)
+					m.textInputActive = false
+					m.textInput.SetValue("")
+					m.tableData = m.originalData
+					return m, nil
+				}
+
 				if m.commandMode {
 					cmd := m.textInput.Value()
 					m.commandInputValue = cmd
@@ -151,14 +186,36 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 					switch {
 					case cmd == "q" || cmd == "Q" || cmd == "quit":
+						m.currentCommand = CommandQuit
+						m.commandMode = true
 						m.quitting = true
 						return m, tea.Quit
 					case cmd == "clear":
+						m.currentCommand = CommandClear
+						m.commandMode = true
 						m.tableData = m.originalData
 						m.textInput.SetValue("")
 						m.statusMessage = "Cleared filter"
 					case cmd == "help":
+						m.currentCommand = CommandHelp
+						m.commandMode = true
 						m.statusMessage = "Help: / to filter, : to enter command mode, q to quit"
+					case cmd == "rename":
+						tableName := m.tableData[m.selected].Name
+						if tableName == "" {
+							m.statusMessage = "No table selected"
+							return m, nil
+						}
+						m.textInput.SetValue("")
+						m.textInput.Prompt = "rename " + tableName + " to: "
+						m.textInput.Placeholder = "new table name"
+						m.textInput.SetValue(tableName)
+						m.textInput.Focus()
+						m.textInputActive = true
+						m.commandMode = true
+						m.currentCommand = CommandRename
+						m.statusMessage = "enter to rename, esc to cancel"
+						return m, nil
 					default:
 						if cmd != "" {
 							m.statusMessage = fmt.Sprintf("Unknown command: %q", cmd)
@@ -179,7 +236,9 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				m.textInputActive = false
 				m.commandMode = false
+				m.currentCommand = ""
 				m.textInput.SetValue("")
+				m.statusMessage = ""
 
 				if !m.commandMode {
 					m.tableData = m.originalData
@@ -259,6 +318,7 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tableData = m.originalData
 				m.selected = 0
 				m.offset = 0
+				m.textInput.SetValue("")
 				return m, nil
 			}
 			m.quitting = true
@@ -327,9 +387,7 @@ func (m modelList) View() string {
 	selWidth := 2
 	gaps := 4
 	remaining := width - selWidth - gaps
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining = max(remaining, 0)
 	nameWidth := int(0.4 * float64(remaining))
 	typeWidth := int(0.15 * float64(remaining))
 	sizeWidth := int(0.15 * float64(remaining))
