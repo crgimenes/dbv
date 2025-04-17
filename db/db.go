@@ -838,3 +838,22 @@ func (pg *Postgres) RenameTable(oldName, newName string) error {
 	}
 	return nil
 }
+
+func (pg *Postgres) RenameColumn(tableName string, oldColName string, newColName string) error {
+	if !validIdent.MatchString(tableName) ||
+		!validIdent.MatchString(oldColName) ||
+		!validIdent.MatchString(newColName) {
+		return fmt.Errorf("invalid table or column name: %q, %q, %q", tableName, oldColName, newColName)
+	}
+
+	query := fmt.Sprintf(
+		`ALTER TABLE "%s" RENAME COLUMN "%s" TO "%s";`,
+		tableName, oldColName, newColName,
+	)
+
+	_, err := pg.DB.Exec(query)
+	if err != nil {
+		return fmt.Errorf("error renaming column: %w SQL: %s", err, query)
+	}
+	return nil
+}
