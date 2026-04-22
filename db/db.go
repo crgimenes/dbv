@@ -84,8 +84,8 @@ func expandPath(p string) (string, error) {
 
 // ssh+postgres://dbUser:dbPass@dbRemoteHost:5432/dbname?sshalias=mydb&localport=5433&sslmode=disable
 func open(dbsource string) (*sqlx.DB, error) {
-	if strings.HasPrefix(dbsource, "ssh+") {
-		dbsource = strings.TrimPrefix(dbsource, "ssh+")
+	if after, ok := strings.CutPrefix(dbsource, "ssh+"); ok {
+		dbsource = after
 		u, err := url.Parse(dbsource)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse DSN: %w", err)
@@ -410,12 +410,12 @@ func (pg *Postgres) ListRecords(
 	}
 
 	separator := ""
-	fields := ""
+	var fields strings.Builder
 	for i, column := range columns {
 		if i > 0 {
 			separator = ", "
 		}
-		fields += separator + fmt.Sprintf("%q", column.ColumnName)
+		fields.WriteString(separator + fmt.Sprintf("%q", column.ColumnName))
 	}
 
 	if orderBy == "" {
@@ -427,7 +427,7 @@ func (pg *Postgres) ListRecords(
 
 	sqlStatement := fmt.Sprintf(
 		"SELECT %s\nFROM\n%s %s %s\nOFFSET %d\nLIMIT %d",
-		fields,
+		fields.String(),
 		tableName,
 		where,
 		orderBy,

@@ -594,12 +594,9 @@ func computeColWidths(data [][]string) []int {
 	widths := make([]int, numCols)
 	for _, row := range data {
 		for i, cell := range row {
-			lines := strings.Split(cell, "\n")
-			for _, line := range lines {
-				w := len(line)
-				if w > maxCellWidth {
-					w = maxCellWidth
-				}
+			lines := strings.SplitSeq(cell, "\n")
+			for line := range lines {
+				w := min(len(line), maxCellWidth)
 				if w > widths[i] {
 					widths[i] = w
 				}
@@ -613,10 +610,7 @@ func computeRowHeight(row []string) int {
 	height := 1
 	for _, cell := range row {
 		lines := strings.Split(cell, "\n")
-		h := len(lines)
-		if h > maxCellHeight {
-			h = maxCellHeight
-		}
+		h := min(len(lines), maxCellHeight)
 		if h > height {
 			height = h
 		}
@@ -635,10 +629,7 @@ func renderCell(cell string, width, height, tableWidth int) []string {
 	if len(lines) > 1 {
 		base := lines[0]
 		suffix := "..."
-		available := allowedWidth - len(suffix)
-		if available < 0 {
-			available = 0
-		}
+		available := max(allowedWidth-len(suffix), 0)
 		var display string
 		if len(base) > available {
 			display = base[:available] + suffix
@@ -684,7 +675,7 @@ func renderRow(row []string, colWidths []int, rowHeight, horizontalOff, tableWid
 		cells = append(cells, renderCell(row[j], colWidths[j], rowHeight, tableWidth))
 	}
 	rendered := make([]string, rowHeight)
-	for i := 0; i < rowHeight; i++ {
+	for i := range rowHeight {
 		var sb strings.Builder
 		for j, cellLines := range cells {
 			if j > 0 {
@@ -713,7 +704,7 @@ func highlightCell(rowLines []string, row []string, colWidths []int, rowHeight, 
 		cells = append(cells, cellLines)
 	}
 	newRow := make([]string, rowHeight)
-	for i := 0; i < rowHeight; i++ {
+	for i := range rowHeight {
 		var sb strings.Builder
 		for j, cellLines := range cells {
 			if j > 0 {
