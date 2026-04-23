@@ -37,6 +37,7 @@ type modelList struct {
 	originalData      []TableInfo
 	quitting          bool
 	selected          int
+	showHelp          bool
 	statusMessage     string
 	tableData         []TableInfo
 	textInput         textinput.Model
@@ -219,7 +220,7 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					case cmd == "help":
 						m.currentCommand = CommandHelp
 						m.commandMode = true
-						m.statusMessage = "Help: / to filter, : to enter command mode, q to quit"
+						m.showHelp = true
 					case cmd == "rename":
 						tableName := m.tableData[m.selected].Name
 						if tableName == "" {
@@ -313,6 +314,11 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.showHelp {
+			m.showHelp = false
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "/":
 			m.textInputActive = true
@@ -387,6 +393,7 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Clear status message on any other key press
 		m.statusMessage = ""
+		m.showHelp = false
 		return m, nil
 
 	default:
@@ -461,21 +468,46 @@ func (m modelList) View() string {
 		sb.WriteString("\n")
 	}
 
-	if m.statusMessage != "" {
+	if m.showHelp {
+		sb.WriteString(statusBarStyle.Render("Commands (press any key to close)"))
+		sb.WriteString("\n")
+		sb.WriteString(statusBarStyle.Render("  Navigation"))
+		sb.WriteString("\n")
+		sb.WriteString(tableCellStyle.Render("  j / down    next row"))
+		sb.WriteString("\n")
+		sb.WriteString(tableCellStyle.Render("  k / up      previous row"))
+		sb.WriteString("\n")
+		sb.WriteString(tableCellStyle.Render("  enter       open table"))
+		sb.WriteString("\n")
+		sb.WriteString(statusBarStyle.Render("  Search"))
+		sb.WriteString("\n")
+		sb.WriteString(tableCellStyle.Render("  /           regex filter"))
+		sb.WriteString("\n")
+		sb.WriteString(statusBarStyle.Render("  Commands (:)"))
+		sb.WriteString("\n")
+		sb.WriteString(tableCellStyle.Render("  :q / :quit  quit"))
+		sb.WriteString("\n")
+		sb.WriteString(tableCellStyle.Render("  :clear      clear filter"))
+		sb.WriteString("\n")
+		sb.WriteString(tableCellStyle.Render("  :rename     rename selected table"))
+		sb.WriteString("\n")
+		sb.WriteString(tableCellStyle.Render("  :help       show this help"))
+		sb.WriteString("\n")
+	} else if m.statusMessage != "" {
 		sb.WriteString(errorStatusBarStyle.Render(m.statusMessage))
+		sb.WriteString("\n")
 	} else if m.err != nil {
 		statusText := fmt.Sprintf("Error: %v (Press any key to continue)", m.err)
 		sb.WriteString(errorStatusBarStyle.Render(statusText))
+		sb.WriteString("\n")
 	} else {
 		status := fmt.Sprintf("Row %d of %d", m.selected+1, len(m.tableData))
 		sb.WriteString(statusBarStyle.Render(status))
+		sb.WriteString("\n")
 	}
-	sb.WriteString("\n")
 
 	if m.textInputActive {
 		sb.WriteString(m.textInput.View())
-	} else {
-		sb.WriteString("")
 	}
 	return sb.String()
 }

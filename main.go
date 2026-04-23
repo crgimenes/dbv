@@ -249,22 +249,30 @@ func runLuaFile(name string) {
 			log.Fatalf("url is nil for table: %q", confTbl)
 		}
 
+		viewsPathStr := ""
 		viewsPath := confTbl.RawGetString("views")
 		if viewsPath != luaState.LNil {
-			viewsPathStr := viewsPath.String()
-			if !fileExists(viewsPathStr) {
-				log.Fatalf("views file not found: %s", viewsPathStr)
+			viewsPathStr = viewsPath.String()
+			info, err := os.Stat(viewsPathStr)
+			if err != nil {
+				if os.IsNotExist(err) {
+					log.Fatalf("views directory not found: %s", viewsPathStr)
+				}
+				log.Fatalf("failed to access views directory: %s", err)
+			}
+			if !info.IsDir() {
+				log.Fatalf("views path is not a directory: %s", viewsPathStr)
 			}
 			viewsPathStr, err = filepath.Abs(viewsPathStr)
 			if err != nil {
-				log.Fatalf("failed to get absolute path for views file: %s", viewsPathStr)
+				log.Fatalf("failed to get absolute path for views directory: %s", viewsPathStr)
 			}
 		}
 
 		cfg := db.DBConfig{
 			URL:       url.String(),
 			Title:     titlestr,
-			ViewsPath: viewsPath.String(),
+			ViewsPath: viewsPathStr,
 		}
 
 		configs = append(configs, cfg)
