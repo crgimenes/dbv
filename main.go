@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/url"
@@ -11,10 +12,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	luaState "github.com/yuin/gopher-lua"
+	"github.com/crgimenes/filo"
 
 	"github.com/crgimenes/dbv/db"
-	"github.com/crgimenes/dbv/lua"
 )
 
 type screen int
@@ -103,7 +103,7 @@ func fileExists(name string) bool {
 	return true
 }
 
-func getInitLuaPath() string {
+func getInitFiloPath() string {
 	configHome := os.Getenv("XDG_CONFIG_HOME")
 	if configHome == "" {
 		home, err := os.UserHomeDir()
@@ -112,7 +112,7 @@ func getInitLuaPath() string {
 		}
 		configHome = filepath.Join(home, ".config")
 	}
-	return filepath.Join(configHome, "dbv", "init.lua")
+	return filepath.Join(configHome, "dbv", "init.filo")
 }
 
 func maskDBURL(dbURL string) (string, error) {
@@ -196,96 +196,99 @@ func (m menuModel) View() string {
 	return sb.String()
 }
 
-func runLuaFile(name string) {
-	// Create a new Lua state.
-	L := lua.New()
-	defer L.Close()
+// loadDBConfigs reads a Filo config file and returns the database
+// configurations it declares. The file populates the list by calling the
+// registered builtin (database url [title] [views]); url is required, title
+// defaults to the masked url when empty, and views is an optional directory.
+func loadDBConfigs(name string) []db.DBConfig {
+	f := filo.New()
+	defer f.Close()
 
-	// Read the Lua file.
+	var configs []db.DBConfig
+
+	err := f.RegisterBuiltin("database", func(_ context.Context, args []filo.Value) (filo.Value, error) {
+		if len(args) < 1 {
+			return filo.VBool(false), fmt.Errorf("database: url is required")
+		}
+
+		dbURL, err := args[0].AsString()
+		if err != nil {
+			return filo.VBool(false), fmt.Errorf("database: url must be a string: %w", err)
+		}
+		if dbURL == "" {
+			return filo.VBool(false), fmt.Errorf("database: url must not be empty")
+		}
+
+		title := ""
+		if len(args) >= 2 {
+			title, err = args[1].AsString()
+			if err != nil {
+				return filo.VBool(false), fmt.Errorf("database: title must be a string: %w", err)
+			}
+		}
+		if title == "" {
+			title, err = maskDBURL(dbURL)
+			if err != nil {
+				return filo.VBool(false), err
+			}
+		}
+
+		viewsPath := ""
+		if len(args) >= 3 {
+			viewsPath, err = args[2].AsString()
+			if err != nil {
+				return filo.VBool(false), fmt.Errorf("database: views must be a string: %w", err)
+			}
+		}
+		if viewsPath != "" {
+			info, statErr := os.Stat(viewsPath)
+			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					return filo.VBool(false), fmt.Errorf("views directory not found: %s", viewsPath)
+				}
+				return filo.VBool(false), fmt.Errorf("failed to access views directory: %w", statErr)
+			}
+			if !info.IsDir() {
+				return filo.VBool(false), fmt.Errorf("views path is not a directory: %s", viewsPath)
+			}
+			viewsPath, err = filepath.Abs(viewsPath)
+			if err != nil {
+				return filo.VBool(false), fmt.Errorf("failed to get absolute path for views directory: %s", viewsPath)
+			}
+		}
+
+		configs = append(configs, db.DBConfig{
+			URL:       dbURL,
+			Title:     title,
+			ViewsPath: viewsPath,
+		})
+		return filo.VBool(true), nil
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Read the Filo file.
 	b, err := os.ReadFile(filepath.Clean(name))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Pre-declare DataBases as an empty table.
-	emptyTable := L.GetState().NewTable()
-	L.SetGlobalTable("DataBases", emptyTable)
-
-	// Execute the Lua code that should populate DataBases.
-	if err := L.DoString(string(b)); err != nil {
+	// Execute the Filo code that should register the databases.
+	if err := f.DoString(string(b)); err != nil {
 		log.Fatal(err)
 	}
 
-	// Retrieve the DataBases table.
-	table := L.GetGlobalTable("DataBases")
-	if table == nil {
-		log.Fatal("DataBases is not a table")
-	}
+	return configs
+}
 
-	// Convert the Lua table to a slice of db.DBConfig.
-	var configs []db.DBConfig
-	table.ForEach(func(_, value luaState.LValue) {
-		confTbl, ok := value.(*luaState.LTable)
-		if !ok {
-			return
-		}
-
-		var (
-			title luaState.LValue
-			url   luaState.LValue
-		)
-
-		titlestr := ""
-		title = confTbl.RawGetString("title")
-		titlestr = title.String()
-		if title == luaState.LNil {
-			titlestr = confTbl.RawGetString("url").String()
-			titlestr, err = maskDBURL(titlestr)
-		}
-
-		url = confTbl.RawGetString("url")
-		if url == luaState.LNil {
-			// if url is nil, error message
-			log.Fatalf("url is nil for table: %q", confTbl)
-		}
-
-		viewsPathStr := ""
-		viewsPath := confTbl.RawGetString("views")
-		if viewsPath != luaState.LNil {
-			viewsPathStr = viewsPath.String()
-			info, err := os.Stat(viewsPathStr)
-			if err != nil {
-				if os.IsNotExist(err) {
-					log.Fatalf("views directory not found: %s", viewsPathStr)
-				}
-				log.Fatalf("failed to access views directory: %s", err)
-			}
-			if !info.IsDir() {
-				log.Fatalf("views path is not a directory: %s", viewsPathStr)
-			}
-			viewsPathStr, err = filepath.Abs(viewsPathStr)
-			if err != nil {
-				log.Fatalf("failed to get absolute path for views directory: %s", viewsPathStr)
-			}
-		}
-
-		cfg := db.DBConfig{
-			URL:       url.String(),
-			Title:     titlestr,
-			ViewsPath: viewsPathStr,
-		}
-
-		configs = append(configs, cfg)
-	})
-
-	// print the configs
-	//for _, cfg := range configs {
-	//	fmt.Printf("DBConfig: %+v\n", cfg)
-	//}
+func runFiloFile(name string) {
+	configs := loadDBConfigs(name)
 
 	// if there is only one database, use it
 	if len(configs) == 1 {
 		DBTitle = configs[0].Title
+		var err error
 		db.Storage, err = db.New(configs[0].URL)
 		if err != nil {
 			log.Fatal(err)
@@ -544,13 +547,13 @@ func main() {
 		useSelectorMode = true
 	}
 
-	initFile := getInitLuaPath()
+	initFile := getInitFiloPath()
 	if fileExists(initFile) {
-		runLuaFile(initFile)
+		runFiloFile(initFile)
 	} else {
 		// load local config
-		initFile = "./init.lua"
-		runLuaFile(initFile)
+		initFile = "./init.filo"
+		runFiloFile(initFile)
 	}
 
 	defer func() {
@@ -565,7 +568,7 @@ func main() {
 				log.Fatalf("file not found: %q", runFile)
 			}
 			log.Printf("running %s", runFile)
-			runLuaFile(runFile)
+			runFiloFile(runFile)
 		}
 	}
 

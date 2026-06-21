@@ -12,7 +12,7 @@
 - **Insert Statement Generation**: Create template SQL INSERT statements that include default values and respect primary key order.
 - **Go Struct Generation**: Generate Go struct definitions based on table columns (mapping PostgreSQL types to Go types).
 - **JSON Export**: Convert table rows into JSON structures.
-- **Lua Configuration**: Configure database connections using Lua scripts (e.g., `init.lua`).
+- **Filo Configuration**: Configure database connections using [Filo](https://github.com/crgimenes/filo) scripts (e.g., `init.filo`).
 - **Keyboard Shortcuts**: Navigate, filter, and execute commands with quick key bindings.
 
 ## Requirements
@@ -47,20 +47,14 @@ You can also download the pre-built binaries from the [GitHub Releases](https://
 
 ## Configuration
 
-By default, dbv loads database connections from a Lua file named `init.lua`. Place this file in either `~/.config/dbv/init.lua` or in the current directory. For example:
+By default, dbv loads database connections from a [Filo](https://github.com/crgimenes/filo) file named `init.filo`. Place this file in either `~/.config/dbv/init.filo` or in the current directory. Each connection is declared with `(database url [title] [views])`: the URL is required, the title is optional (it defaults to the URL with the password masked), and an optional third argument points to a directory of custom views. For example:
 
-```lua
-DataBases = {
-    {
-        title = "LocalDB",
-        url   = "postgres://username:password@localhost:5432/mydb?sslmode=disable"
-    },
-    {
-        title = "OtherDB",
-        url   = "postgres://user:pass@server:5432/otherdb?sslmode=disable"
-    }
-}
+```scheme
+(database "postgres://username:password@localhost:5432/mydb?sslmode=disable" "LocalDB")
+(database "postgres://user:pass@server:5432/otherdb?sslmode=disable" "OtherDB")
 ```
+
+> **Note:** `database` is not a built-in Filo operator — it is an application-specific function that dbv registers (via `RegisterBuiltin`) before evaluating the config file. Each `(database ...)` call appends one connection, so the file is simply a sequence of these calls, one per line.
 
 ## Usage
 
@@ -94,13 +88,8 @@ cd dbv
 go build -o dbv
 mv dbv /usr/local/bin/
 mkdir -p ~/.config/dbv
-cat <<EOF > ~/.config/dbv/init.lua
-DataBases = {
-    {
-        title = "LocalTest",
-        url   = "postgres://postgres:mysecret@localhost:5432/mytestdb?sslmode=disable"
-    }
-}
+cat <<EOF > ~/.config/dbv/init.filo
+(database "postgres://postgres:mysecret@localhost:5432/mytestdb?sslmode=disable" "LocalTest")
 EOF
 dbv
 ```
