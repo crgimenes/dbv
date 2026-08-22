@@ -39,9 +39,9 @@ func ExtractParameters(sqlStr string) []Parameter {
 		param := Parameter{
 			Name:       fields[0],
 			Occurrence: i,
-		}
-		// Default type "string"
-		param.Type = "string"
+
+			// Default type "string"
+			Type: "string"}
 		if len(fields) >= 2 && fields[1] != "" {
 			param.Type = fields[1]
 		}
