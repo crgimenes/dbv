@@ -180,12 +180,12 @@ func (m menuModel) View() string {
 	for i, cfg := range m.choices {
 		title := cfg.Title
 		if m.selected == i {
-			sb.WriteString(fmt.Sprintf("> %d ", i+1))
+			fmt.Fprintf(&sb, "> %d ", i+1)
 			sb.WriteString(selectedCellStyle.Render(title))
 			sb.WriteString("\n")
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("  %d ", i+1))
+		fmt.Fprintf(&sb, "  %d ", i+1)
 		sb.WriteString(statusBarStyle.Render(title))
 		sb.WriteString("\n")
 	}
@@ -429,10 +429,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case formResultMsg:
 		return m, func() tea.Msg {
-			return showUserViewDataMsg{
-				viewName: msg.viewName,
-				sql:      msg.sql,
-			}
+			return showUserViewDataMsg(msg)
 		}
 
 	case showUserViewDataMsg:

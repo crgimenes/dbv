@@ -372,11 +372,11 @@ func (m modelSelector) View() string {
 			selIndicator := "  "
 			if i == m.selectedRow {
 				selIndicator = "> "
-				sb.WriteString(fmt.Sprintf("%s%s\n", selIndicator, rowHighlight.Render(
-					fitText(table.Name, nameWidth))))
+				fmt.Fprintf(&sb, "%s%s\n", selIndicator, rowHighlight.Render(
+					fitText(table.Name, nameWidth)))
 			} else {
-				sb.WriteString(fmt.Sprintf("%s%s\n", selIndicator, tableCellStyle.Render(
-					fitText(table.Name, nameWidth))))
+				fmt.Fprintf(&sb, "%s%s\n", selIndicator, tableCellStyle.Render(
+					fitText(table.Name, nameWidth)))
 			}
 		}
 
@@ -416,16 +416,16 @@ func (m modelSelector) View() string {
 
 			if i == m.selectedFieldRow {
 				selIndicator = "> "
-				sb.WriteString(fmt.Sprintf("%s%s  %s\n",
+				fmt.Fprintf(&sb, "%s%s  %s\n",
 					selIndicator,
 					rowHighlight.Render(formatLeft(field.ColumnName, nameWidth)),
-					rowHighlight.Render(formatLeft(field.DataType, typeWidth))))
+					rowHighlight.Render(formatLeft(field.DataType, typeWidth)))
 				continue
 			}
-			sb.WriteString(fmt.Sprintf("%s%s  %s\n",
+			fmt.Fprintf(&sb, "%s%s  %s\n",
 				selIndicator,
 				tableCellStyle.Render(formatLeft(field.ColumnName, nameWidth)),
-				tableCellStyle.Render(formatLeft(field.DataType, typeWidth))))
+				tableCellStyle.Render(formatLeft(field.DataType, typeWidth)))
 		}
 
 		for i := visibleEnd - m.fieldOffset; i < fieldDataArea; i++ {

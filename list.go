@@ -205,23 +205,23 @@ func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInputActive = false
 					m.commandMode = false
 
-					switch {
-					case cmd == "q" || cmd == "Q" || cmd == "quit":
+					switch cmd {
+					case "q", "Q", "quit":
 						m.currentCommand = CommandQuit
 						m.commandMode = true
 						m.quitting = true
 						return m, tea.Quit
-					case cmd == "clear":
+					case "clear":
 						m.currentCommand = CommandClear
 						m.commandMode = true
 						m.tableData = m.originalData
 						m.textInput.SetValue("")
 						m.statusMessage = "Cleared filter"
-					case cmd == "help":
+					case "help":
 						m.currentCommand = CommandHelp
 						m.commandMode = true
 						m.showHelp = true
-					case cmd == "rename":
+					case "rename":
 						tableName := m.tableData[m.selected].Name
 						if tableName == "" {
 							m.statusMessage = "No table selected"
