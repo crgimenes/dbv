@@ -36,6 +36,11 @@ jobs:
       - name: Test
         timeout-minutes: 5
         run: go test -count=1 -timeout 120s ./...
+      # A broken service would make the integration tests skip in silence.
+      - name: Integration tests ran
+        run: |
+          go test -count=1 -timeout 120s -v -run 'TestQueryReadOnly|TestReadOnlyHoldsWithSimpleProtocol|TestOddNamesAndKeys|TestPKLastColumn' . | tee out.txt
+          if grep -q -- '--- SKIP' out.txt; then echo "integration tests skipped: is the postgres service up?"; exit 1; fi
 
   other:
     name: test-${{ matrix.os }}

@@ -14,7 +14,7 @@ func TestLoadDBConfigs(t *testing.T) {
 
 	cfg := `(database "postgres://u:secret@localhost:5432/mydb" "LocalDB")
 (database "postgres://u:secret@server:5432/otherdb")
-(database "postgres://u:secret@host:5432/withviews" "WithViews" "` + viewsDir + `")`
+(database "postgres://u:secret@host:5432/withviews" "WithViews" "` + filepath.ToSlash(viewsDir) + `")` // a Filo string: C:\Users would read as an escape
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "init.filo")
