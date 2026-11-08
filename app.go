@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/crgimenes/filo-term-go/kit"
 	"github.com/crgimenes/filo-term-go/screen"
@@ -161,7 +163,7 @@ func (a *app) paint() {
 }
 
 // external runs program (an editor, a pager) on text in a temporary file
-// and returns what the file holds afterwards.
+// and returns what the file holds afterwards, as it is.
 func (a *app) external(program, text string) (string, error) {
 	f, err := os.CreateTemp("", "dbv-*.sql")
 	if err != nil {
@@ -198,7 +200,7 @@ func (a *app) external(program, text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimRight(string(b), "\r\n"), nil
+	return string(b), nil
 }
 
 func envOr(name, fallback string) string {
@@ -238,6 +240,9 @@ func (a *app) connect(cfg db.DBConfig) error {
 }
 
 func runTUI(configs []db.DBConfig, first func(a *app) view) error {
+	if len(configs) == 0 {
+		return fmt.Errorf("no connection configured in %s", configPath())
+	}
 	t, err := screen.Open()
 	if err != nil {
 		return err
@@ -250,10 +255,22 @@ func runTUI(configs []db.DBConfig, first func(a *app) view) error {
 		}
 	}()
 
-	switch len(configs) {
-	case 0:
+	// kill or a closed window would otherwise leave the shell in raw mode
+	// on the alternate screen.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGHUP, os.Interrupt)
+	defer signal.Stop(sig)
+	go func() {
+		s, ok := <-sig
+		if !ok {
+			return
+		}
 		_ = t.Close()
-		return fmt.Errorf("no connection configured in %s", configPath())
+		fmt.Fprintln(os.Stderr, "dbv:", s)
+		os.Exit(1)
+	}()
+
+	switch len(configs) {
 	case 1:
 		err = a.connect(configs[0])
 		if err != nil {

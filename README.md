@@ -47,7 +47,7 @@ You can also download the pre-built binaries from the [GitHub Releases](https://
 
 ## Configuration
 
-By default, dbv loads database connections from a [Filo](https://github.com/crgimenes/filo) file named `init.filo`. Place this file in either `~/.config/dbv/init.filo` or in the current directory. Each connection is declared with `(database url [title] [views])`: the URL is required, the title is optional (it defaults to the URL with the password masked), and an optional third argument points to a directory of custom views. For example:
+By default, dbv loads database connections from a [Filo](https://github.com/crgimenes/filo) file named `init.filo`. Place this file in the platform's config directory — `~/Library/Application Support/dbv/init.filo` on macOS, `~/.config/dbv/init.filo` on Linux (or `$XDG_CONFIG_HOME/dbv`) — or in the current directory. Each connection is declared with `(database url [title] [views])`: the URL is required, the title is optional (it defaults to the URL with the password masked), and an optional third argument points to a directory of custom views. For example:
 
 ```scheme
 (database "postgres://username:password@localhost:5432/mydb?sslmode=disable" "LocalDB")
@@ -115,7 +115,7 @@ git clone https://github.com/crgimenes/dbv.git
 cd dbv
 go build -o dbv
 mv dbv /usr/local/bin/
-mkdir -p ~/.config/dbv
+mkdir -p ~/.config/dbv    # macOS: ~/Library/Application\ Support/dbv
 cat <<EOF > ~/.config/dbv/init.filo
 (database "postgres://postgres:mysecret@localhost:5432/mytestdb?sslmode=disable" "LocalTest")
 EOF

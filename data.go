@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/crgimenes/filo-term-go/kit"
 	"github.com/crgimenes/filo-term-go/screen"
@@ -32,6 +35,7 @@ type tableData struct {
 	columns  []db.ColumnInfo
 	header   []string
 	rows     [][]string
+	nulls    [][]bool // a NULL, which shows as "NULL" but is not that text
 	total    int
 	where    string
 	order    []orderBy
@@ -47,34 +51,45 @@ func newTableData(a *app, name, pk string) (*tableData, error) {
 	return d, d.reset(a)
 }
 
-// newQueryData shows a query's answer, read only.
+const (
+	queryRowsMax = 100000
+	queryTimeout = 2 * time.Minute
+)
+
+// newQueryData shows a user view's answer. The view runs in a READ ONLY
+// transaction: a file in the views directory is a query, never a change.
 func newQueryData(a *app, name, sql string) (*tableData, error) {
-	records, columns, err := a.pg.QuerySQL(sql)
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	res, err := a.pg.QueryReadOnly(ctx, queryRowsMax, sql)
 	if err != nil {
 		return nil, err
 	}
-	d := &tableData{name: name, pk: "-", readOnly: true, query: true, columns: columns}
+	d := &tableData{name: name, pk: "-", readOnly: true, query: true, columns: res.Columns}
 	d.setHeader()
-	for _, rec := range records {
-		line := make([]string, len(columns))
-		for i, c := range columns {
-			line[i] = cellText(rec[c.ColumnName])
-		}
-		d.rows = append(d.rows, line)
+	for _, r := range res.Rows {
+		d.add(r)
 	}
 	d.total = len(d.rows)
 	d.measure()
+	if res.Truncated {
+		a.say(kit.Warn, "showing the first %d rows", queryRowsMax)
+	}
 	return d, nil
 }
 
-func cellText(v any) string {
-	switch x := v.(type) {
-	case nil:
-		return "NULL"
-	case []byte:
-		return string(x)
+// add appends one row of values, nil being NULL.
+func (d *tableData) add(values []any) {
+	line := make([]string, len(values))
+	null := make([]bool, len(values))
+	for i, v := range values {
+		line[i], null[i] = fmt.Sprint(v), v == nil
+		if v == nil {
+			line[i] = "NULL"
+		}
 	}
-	return fmt.Sprint(v)
+	d.rows = append(d.rows, line)
+	d.nulls = append(d.nulls, null)
 }
 
 func (d *tableData) setHeader() {
@@ -87,13 +102,13 @@ func (d *tableData) setHeader() {
 func (d *tableData) orderSQL() string {
 	parts := make([]string, len(d.order))
 	for i, o := range d.order {
-		parts[i] = db.QuoteIdent(o.col) + " " + o.dir
+		parts[i] = db.QuoteName(o.col) + " " + o.dir
 	}
 	return strings.Join(parts, ", ")
 }
 
 func (d *tableData) reset(a *app) error {
-	d.rows, d.row, d.first = nil, 0, 0
+	d.rows, d.nulls, d.row, d.first = nil, nil, 0, 0
 	return d.load(a)
 }
 
@@ -109,11 +124,11 @@ func (d *tableData) load(a *app) error {
 	d.columns, d.total = columns, total
 	d.setHeader()
 	for _, rec := range recs {
-		line := make([]string, len(columns))
+		values := make([]any, len(columns))
 		for i, c := range columns {
-			line[i] = cellText(rec[c.ColumnName])
+			values[i] = rec[c.ColumnName]
 		}
-		d.rows = append(d.rows, line)
+		d.add(values)
 	}
 	d.measure()
 	return nil
@@ -236,7 +251,7 @@ func (d *tableData) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
 			switch {
 			case i == d.row && j == d.col:
 				pen = kit.Focus
-			case v == "NULL":
+			case d.nulls[i][j]:
 				pen = kit.Dim
 			}
 			c.Print(top+2+r, at, text, pen)
@@ -404,7 +419,8 @@ func (d *tableData) run(a *app, what string) {
 		a.fail(err)
 		return
 	}
-	if (what != "insert" && what != "update") || out == strings.TrimRight(text, "\r\n") {
+	_, changed := edited(text, out)
+	if (what != "insert" && what != "update") || !changed {
 		return
 	}
 	err = a.pg.Exec(out)
@@ -419,11 +435,19 @@ func (d *tableData) run(a *app, what string) {
 	}
 }
 
-func (d *tableData) rowValues() []string {
+// rowValues is the row under the cursor with nil for NULL; nil when there
+// is no row.
+func (d *tableData) rowValues() []any {
 	if d.row >= len(d.rows) {
 		return nil
 	}
-	return d.rows[d.row]
+	out := make([]any, len(d.rows[d.row]))
+	for i, v := range d.rows[d.row] {
+		if !d.nulls[d.row][i] {
+			out[i] = v
+		}
+	}
+	return out
 }
 
 func (d *tableData) editCell(a *app) {
@@ -431,12 +455,13 @@ func (d *tableData) editCell(a *app) {
 		return
 	}
 	old := d.cell()
-	value, err := a.edit(old)
+	raw, err := a.edit(old)
 	if err != nil {
 		a.fail(err)
 		return
 	}
-	if value == old {
+	value, changed := edited(old, raw)
+	if !changed {
 		return
 	}
 	if d.readOnly {
@@ -448,8 +473,51 @@ func (d *tableData) editCell(a *app) {
 		a.fail(err)
 		return
 	}
-	d.rows[d.row][d.col] = value
+	d.rows[d.row][d.col], d.nulls[d.row][d.col] = value, false
 	a.say(kit.OK, "%s saved", d.header[d.col])
+	if d.ordersBy(d.header[d.col]) {
+		d.reload(a)
+	}
+}
+
+// edited says what the editor's file means for a cell that held old: the
+// editor's own final newline is not an edit, and a value that ended in a
+// newline keeps it.
+func edited(old, raw string) (string, bool) {
+	if raw == old || strings.TrimRight(raw, "\r\n") == strings.TrimRight(old, "\r\n") {
+		return old, false
+	}
+	value := strings.TrimRight(raw, "\r\n")
+	return value + old[len(strings.TrimRight(old, "\r\n")):], true
+}
+
+// ordersBy says the rows are ordered by col, so an edit of it moves its row
+// among the pages already read.
+func (d *tableData) ordersBy(col string) bool {
+	for _, o := range d.order {
+		if o.col == col {
+			return true
+		}
+	}
+	return len(d.order) == 0 && slices.Contains(strings.Split(d.pk, ", "), col)
+}
+
+// reload reads the pages again, as many rows as were loaded, keeping the
+// cursor where it was.
+func (d *tableData) reload(a *app) {
+	n, row, col := len(d.rows), d.row, d.col
+	err := d.reset(a)
+	for err == nil && len(d.rows) < min(n, d.total) {
+		before := len(d.rows)
+		err = d.load(a)
+		if len(d.rows) == before {
+			break
+		}
+	}
+	if err != nil {
+		a.fail(err)
+	}
+	d.row, d.col = min(row, max(0, len(d.rows)-1)), col
 }
 
 var dataHelp = []string{

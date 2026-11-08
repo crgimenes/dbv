@@ -21,10 +21,12 @@ dbv COMMAND [flags] [args]
 
 Terminal viewer and editor for PostgreSQL. With no command it opens the
 interactive interface; with a command it answers once and exits, for
-scripts and agents. Connections come from ~/.config/dbv/init.filo (or
-./init.filo).
+scripts and agents. Connections come from init.filo in the config
+directory (macOS: ~/Library/Application Support/dbv, Linux:
+~/.config/dbv), or ./init.filo.
 
-Commands (all read-only; SQL runs inside a READ ONLY transaction):
+Commands (none writes: rows and query run one statement in a READ ONLY
+transaction, the others read the catalog with fixed queries):
   dbs                 configured connections
   tables              tables, views and materialized views
   columns TABLE       columns of a table, in table order
@@ -270,19 +272,23 @@ func columnsJSON(cols []db.ColumnInfo) []columnJSON {
 }
 
 func cmdRows(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) error {
+	rel, err := pg.Resolve(args[0])
+	if err != nil {
+		return err
+	}
 	order := o.order
 	if order == "" {
-		pk, err := pg.GetPrimaryKeyColumns(args[0])
+		pk, err := pg.GetPrimaryKeyColumns(rel.SQL)
 		if err != nil {
 			return err
 		}
 		for i, c := range pk {
-			pk[i] = db.QuoteIdent(c)
+			pk[i] = db.QuoteName(c)
 		}
 		order = strings.Join(pk, ", ")
 	}
 	var q strings.Builder
-	q.WriteString("SELECT * FROM " + db.QuoteIdent(args[0]))
+	q.WriteString("SELECT * FROM " + rel.SQL)
 	if o.where != "" {
 		q.WriteString(" WHERE " + o.where)
 	}

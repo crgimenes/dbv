@@ -34,17 +34,17 @@ func TestPickConfig(t *testing.T) {
 	}
 }
 
-func TestQuoteIdent(t *testing.T) {
+func TestQuoteName(t *testing.T) {
 	cases := map[string]string{
 		"users":     `"users"`,
-		"s.t":       `"s"."t"`,
+		"s.t":       `"s.t"`,
 		`we"ird`:    `"we""ird"`,
 		"Mixed Cap": `"Mixed Cap"`,
 	}
 	for in, want := range cases {
-		got := db.QuoteIdent(in)
+		got := db.QuoteName(in)
 		if got != want {
-			t.Errorf("QuoteIdent(%q) = %s, want %s", in, got, want)
+			t.Errorf("QuoteName(%q) = %s, want %s", in, got, want)
 		}
 	}
 }

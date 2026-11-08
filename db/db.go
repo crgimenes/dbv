@@ -1,6 +1,7 @@
 package db
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -35,6 +36,7 @@ var (
 type Postgres struct {
 	DB      *sqlx.DB
 	schemas []string
+	tunnel  []io.Closer // the ssh client and its local listener, closed with DB
 }
 
 type Transaction struct {
@@ -64,10 +66,33 @@ func New(dataBaseURL string) (*Postgres, error) {
 	pg.schemas = []string{"public"}
 	if u.Query().Has("search_path") {
 		pg.schemas = strings.Split(u.Query().Get("search_path"), ",")
+		for i, sc := range pg.schemas {
+			pg.schemas[i] = strings.TrimSpace(sc)
+		}
 	}
 
-	pg.DB, err = open(dataBaseURL)
-	return pg, err
+	pg.DB, err = pg.open(withDefaults(u).String())
+	if err != nil {
+		pg.Close()
+		return nil, err
+	}
+	return pg, nil
+}
+
+// withDefaults bounds what a connection may wait for, unless the URL says
+// otherwise: the interface is one loop, and a server that never answers
+// (or a lock that never frees) would freeze it.
+func withDefaults(u *url.URL) *url.URL {
+	q := u.Query()
+	if !q.Has("connect_timeout") {
+		q.Set("connect_timeout", "10")
+	}
+	if !q.Has("statement_timeout") {
+		q.Set("statement_timeout", "60s")
+	}
+	out := *u
+	out.RawQuery = q.Encode()
+	return &out
 }
 
 // expandPath replaces a leading "~" with the current user's home directory.
@@ -83,138 +108,26 @@ func expandPath(p string) (string, error) {
 }
 
 // ssh+postgres://dbUser:dbPass@dbRemoteHost:5432/dbname?sshalias=mydb&localport=5433&sslmode=disable
-func open(dbsource string) (*sqlx.DB, error) {
+func (pg *Postgres) open(dbsource string) (*sqlx.DB, error) {
 	if after, ok := strings.CutPrefix(dbsource, "ssh+"); ok {
-		dbsource = after
-		u, err := url.Parse(dbsource)
+		u, err := url.Parse(after)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse DSN: %w", err)
 		}
+		t, err := sshTarget(u)
+		if err != nil {
+			return nil, err
+		}
+		err = pg.startTunnel(t)
+		if err != nil {
+			return nil, err
+		}
 		q := u.Query()
-
-		sshUser := q.Get("sshuser")
-		sshHost := q.Get("sshhost")
-		sshPort := q.Get("sshport")
-		sshKeyPath := q.Get("sshkey")
-		localPort := q.Get("localport")
-		sshalias := q.Get("sshalias")
-		remoteTarget := q.Get("remotetarget")
-		if remoteTarget == "" {
-			remoteTarget = u.Host
+		for _, k := range []string{"sshuser", "sshhost", "sshport", "sshkey", "localport", "sshalias", "remotetarget"} {
+			q.Del(k)
 		}
-
-		if localPort == "" {
-			return nil, fmt.Errorf("localport must be specified for SSH tunneling")
-		}
-		if sshPort == "" {
-			sshPort = "22"
-		}
-
-		if sshalias != "" {
-			configPath := os.ExpandEnv("$HOME/.ssh/config")
-			f, err := os.Open(filepath.Clean(configPath))
-			if err != nil {
-				return nil, fmt.Errorf("failed to open SSH config: %w", err)
-			}
-			defer f.Close()
-			sshCfg, err := ssh_config.Decode(f)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decode SSH config: %w", err)
-			}
-			if sshUser == "" {
-				sshUser, _ = sshCfg.Get(sshalias, "User")
-				if sshUser == "" {
-					sshUser = os.Getenv("USER")
-				}
-			}
-			if sshHost == "" {
-				hostname, _ := sshCfg.Get(sshalias, "Hostname")
-				if hostname != "" {
-					sshHost = hostname
-				} else {
-					sshHost = sshalias
-				}
-			}
-			if q.Get("sshport") == "" {
-				if port, _ := sshCfg.Get(sshalias, "Port"); port != "" {
-					sshPort = port
-				}
-			}
-			if sshKeyPath == "" {
-				if identity, _ := sshCfg.Get(sshalias, "IdentityFile"); identity != "" {
-					sshKeyPath = os.ExpandEnv(identity)
-				}
-			}
-		}
-
-		q.Del("sshuser")
-		q.Del("sshhost")
-		q.Del("sshport")
-		q.Del("sshkey")
-		q.Del("localport")
-		q.Del("sshalias")
-		q.Del("remotetarget")
-
 		u.RawQuery = q.Encode()
-
-		sshKeyPath, err = expandPath(sshKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to expand SSH key path: %w", err)
-		}
-
-		key, err := os.ReadFile(filepath.Clean(sshKeyPath))
-		if err != nil {
-			return nil, fmt.Errorf("failed to read SSH key: %w", err)
-		}
-		signer, err := ssh.ParsePrivateKey(key)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse SSH key: %w", err)
-		}
-
-		hostKeyCallback, err := knownhosts.New(os.ExpandEnv("$HOME/.ssh/known_hosts"))
-		if err != nil {
-			return nil, fmt.Errorf("failed to create host key callback: %w", err)
-		}
-
-		sshConfig := &ssh.ClientConfig{
-			User: sshUser,
-			Auth: []ssh.AuthMethod{
-				ssh.PublicKeys(signer),
-			},
-			Timeout:         5 * time.Second,
-			HostKeyCallback: hostKeyCallback,
-		}
-		sshConn, err := ssh.Dial("tcp", net.JoinHostPort(sshHost, sshPort), sshConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to dial SSH: %w", err)
-		}
-		listener, err := net.Listen("tcp", net.JoinHostPort("localhost", localPort))
-		if err != nil {
-			return nil, fmt.Errorf("failed to start local listener: %w", err)
-		}
-		go func() {
-			for {
-				localConn, err := listener.Accept()
-				if err != nil {
-					log.Printf("failed to accept local connection: %v", err)
-					continue
-				}
-				//remoteTarget := u.Host
-				remoteConn, err := sshConn.Dial("tcp", remoteTarget)
-				if err != nil {
-					log.Printf("failed to dial remote target: %v", err)
-					_ = localConn.Close()
-					continue
-				}
-				go func() {
-					defer func() { _ = localConn.Close() }()
-					defer func() { _ = remoteConn.Close() }()
-					go func() { _, _ = io.Copy(localConn, remoteConn) }()
-					_, _ = io.Copy(remoteConn, localConn)
-				}()
-			}
-		}()
-		u.Host = net.JoinHostPort("localhost", localPort)
+		u.Host = net.JoinHostPort("localhost", t.localPort)
 		dbsource = u.String()
 	}
 
@@ -223,6 +136,7 @@ func open(dbsource string) (*sqlx.DB, error) {
 		return nil, err
 	}
 	if err = db.Ping(); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	db.SetMaxOpenConns(50)
@@ -231,19 +145,134 @@ func open(dbsource string) (*sqlx.DB, error) {
 	return db, nil
 }
 
-func openBasicConn(dbsource string) (db *sqlx.DB, err error) {
-	db, err = sqlx.Open("pgx", dbsource)
-	if err != nil {
-		return nil, err
+type tunnelTarget struct {
+	user, host, port, key string
+	localPort, remote     string
+}
+
+// sshTarget reads the tunnel from the URL's parameters, filling the gaps
+// from ~/.ssh/config when sshalias names a host there.
+func sshTarget(u *url.URL) (tunnelTarget, error) {
+	q := u.Query()
+	t := tunnelTarget{
+		user:      q.Get("sshuser"),
+		host:      q.Get("sshhost"),
+		port:      q.Get("sshport"),
+		key:       q.Get("sshkey"),
+		localPort: q.Get("localport"),
+		remote:    q.Get("remotetarget"),
 	}
-	err = db.Ping()
-	if err != nil {
-		return nil, err
+	if t.remote == "" {
+		t.remote = u.Host
 	}
-	db.SetMaxOpenConns(50)
-	db.SetMaxIdleConns(30)
-	db.SetConnMaxLifetime(5 * time.Minute)
-	return
+	if t.localPort == "" {
+		return t, errors.New("localport must be specified for SSH tunneling")
+	}
+	alias := q.Get("sshalias")
+	if alias != "" {
+		err := t.fromSSHConfig(alias)
+		if err != nil {
+			return t, err
+		}
+	}
+	if t.port == "" {
+		t.port = "22"
+	}
+	if t.user == "" {
+		t.user = os.Getenv("USER")
+	}
+	key, err := expandPath(t.key)
+	if err != nil {
+		return t, fmt.Errorf("failed to expand SSH key path: %w", err)
+	}
+	t.key = key
+	return t, nil
+}
+
+func (t *tunnelTarget) fromSSHConfig(alias string) error {
+	f, err := os.Open(filepath.Clean(os.ExpandEnv("$HOME/.ssh/config")))
+	if err != nil {
+		return fmt.Errorf("failed to open SSH config: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	cfg, err := ssh_config.Decode(f)
+	if err != nil {
+		return fmt.Errorf("failed to decode SSH config: %w", err)
+	}
+	get := func(key string) string {
+		v, _ := cfg.Get(alias, key)
+		return v
+	}
+	if t.user == "" {
+		t.user = get("User")
+	}
+	if t.host == "" {
+		t.host = cmp.Or(get("Hostname"), alias)
+	}
+	if t.port == "" {
+		t.port = get("Port")
+	}
+	if t.key == "" && get("IdentityFile") != "" {
+		t.key = os.ExpandEnv(get("IdentityFile"))
+	}
+	return nil
+}
+
+// startTunnel forwards localhost:localPort to the remote target through
+// ssh; both ends are kept in pg.tunnel for Close.
+func (pg *Postgres) startTunnel(t tunnelTarget) error {
+	key, err := os.ReadFile(filepath.Clean(t.key))
+	if err != nil {
+		return fmt.Errorf("failed to read SSH key: %w", err)
+	}
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		return fmt.Errorf("failed to parse SSH key: %w", err)
+	}
+	hostKeyCallback, err := knownhosts.New(os.ExpandEnv("$HOME/.ssh/known_hosts"))
+	if err != nil {
+		return fmt.Errorf("failed to create host key callback: %w", err)
+	}
+	sshConn, err := ssh.Dial("tcp", net.JoinHostPort(t.host, t.port), &ssh.ClientConfig{
+		User:            t.user,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		Timeout:         5 * time.Second,
+		HostKeyCallback: hostKeyCallback,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to dial SSH: %w", err)
+	}
+	pg.tunnel = append(pg.tunnel, sshConn)
+	listener, err := net.Listen("tcp", net.JoinHostPort("localhost", t.localPort))
+	if err != nil {
+		return fmt.Errorf("failed to start local listener: %w", err)
+	}
+	pg.tunnel = append(pg.tunnel, listener)
+	go forward(listener, sshConn, t.remote)
+	return nil
+}
+
+func forward(listener net.Listener, sshConn *ssh.Client, remote string) {
+	for {
+		localConn, err := listener.Accept()
+		if errors.Is(err, net.ErrClosed) {
+			return // Close took the tunnel down
+		}
+		if err != nil {
+			continue
+		}
+		remoteConn, err := sshConn.Dial("tcp", remote)
+		if err != nil {
+			_ = localConn.Close()
+			continue
+		}
+		go func() {
+			defer func() { _ = localConn.Close() }()
+			defer func() { _ = remoteConn.Close() }()
+			go func() { _, _ = io.Copy(localConn, remoteConn) }()
+			_, _ = io.Copy(remoteConn, localConn)
+		}()
+	}
 }
 
 func (pg *Postgres) Stats() sql.DBStats {
@@ -302,10 +331,16 @@ func (pg *Postgres) Query(query string, args ...any) (*sql.Rows, error) {
 }
 
 func (pg *Postgres) Close() {
-	err := pg.DB.Close()
-	if err != nil {
-		log.Println(err)
+	if pg.DB != nil {
+		err := pg.DB.Close()
+		if err != nil {
+			log.Println(err)
+		}
 	}
+	for _, v := range slices.Backward(pg.tunnel) {
+		_ = v.Close()
+	}
+	pg.tunnel = nil
 }
 
 func (pg *Postgres) Exec(query string, args ...any) error {
@@ -318,7 +353,7 @@ func (pg *Postgres) Get(ret any, sqlStatement string, args ...any) error {
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 	err = stmt.Get(ret, args...)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -334,13 +369,14 @@ func (pg *Postgres) ListTablesAndViews() ([]TableInfo, error) {
         c.relname AS table_name,
         CASE c.relkind
             WHEN 'r' THEN 'table'
+            WHEN 'p' THEN 'table'
             WHEN 'v' THEN 'view'
             WHEN 'm' THEN 'materialized view'
             ELSE c.relkind::text
         END AS table_type,
         pg_size_pretty(pg_total_relation_size(c.oid)) AS table_size,
         (
-            SELECT string_agg(a.attname, ', ')
+            SELECT string_agg(a.attname, ', ' ORDER BY array_position(i.indkey::int2[], a.attnum))
             FROM pg_index i
             JOIN pg_attribute a
                 ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
@@ -348,12 +384,11 @@ func (pg *Postgres) ListTablesAndViews() ([]TableInfo, error) {
         ) AS primary_key
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname IN (%s)
-          AND c.relkind IN ('r', 'v', 'm')
-        ORDER BY table_type,c.relname;`
+        WHERE n.nspname = ANY($1::text[])
+          AND c.relkind IN ('r', 'p', 'v', 'm')
+        ORDER BY table_type, c.relname;`
 	var tables []TableInfo
-	schemas := "'" + strings.Join(pg.schemas, "','") + "'"
-	err := pg.DB.Select(&tables, fmt.Sprintf(sqlStatement, schemas))
+	err := pg.DB.Select(&tables, sqlStatement, pg.schemas)
 	if err != nil {
 		return nil, err
 	}
@@ -366,13 +401,20 @@ type ColumnInfo struct {
 }
 
 func (pg *Postgres) ListColumns(tableName string) ([]ColumnInfo, error) {
+	rel, err := pg.Resolve(tableName)
+	if err != nil {
+		return nil, err
+	}
+	return pg.relColumns(rel)
+}
+
+func (pg *Postgres) relColumns(rel Rel) ([]ColumnInfo, error) {
 	const sqlStatement = `SELECT column_name, data_type
 	FROM information_schema.columns
-	WHERE table_name = $1
-	  AND table_schema = ANY($2::text[])
-	ORDER BY array_position($2::text[], table_schema::text), ordinal_position;`
+	WHERE table_schema = $1 AND table_name = $2
+	ORDER BY ordinal_position;`
 	var columns []ColumnInfo
-	err := pg.DB.Select(&columns, sqlStatement, tableName, pg.schemas)
+	err := pg.DB.Select(&columns, sqlStatement, rel.Schema, rel.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +423,7 @@ func (pg *Postgres) ListColumns(tableName string) ([]ColumnInfo, error) {
 
 func (pg *Postgres) ListRecords(
 	tableName string,
-	pkField string,
+	_ string, // the primary key now comes from the catalog, quoted
 	offset int,
 	limit int,
 	where string,
@@ -392,47 +434,49 @@ func (pg *Postgres) ListRecords(
 	int,
 	error,
 ) {
-	var records []map[string]any
+	rel, err := pg.Resolve(tableName)
+	if err != nil {
+		return nil, nil, 0, err
+	}
 	if where != "" {
 		where = "WHERE " + where
 	}
 
 	var totalRecords int
-	err := pg.Get(&totalRecords, fmt.Sprintf(
-		"SELECT COUNT(*) FROM %s %s",
-		tableName,
-		where))
+	err = pg.Get(&totalRecords, fmt.Sprintf("SELECT COUNT(*) FROM %s %s", rel.SQL, where))
 	if err != nil {
 		return nil, nil, 0, err
 	}
 
-	columns, err := pg.ListColumns(tableName)
+	columns, err := pg.relColumns(rel)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-
-	separator := ""
-	var fields strings.Builder
+	fields := make([]string, len(columns))
 	for i, column := range columns {
-		if i > 0 {
-			separator = ", "
-		}
-		fields.WriteString(separator + fmt.Sprintf("%q", column.ColumnName))
+		fields[i] = QuoteName(column.ColumnName)
 	}
 
-	if orderBy == "" {
-		orderBy = pkField
+	pks, err := pg.relPrimaryKey(rel)
+	if err != nil {
+		return nil, nil, 0, err
 	}
-	if orderBy != "" {
-		orderBy = "ORDER BY " + orderBy
+	for i, pk := range pks {
+		pks[i] = QuoteName(pk)
+	}
+	// The primary key last breaks ties, so a page boundary on equal values
+	// neither skips nor repeats rows.
+	order := strings.Join(slices.DeleteFunc([]string{orderBy, strings.Join(pks, ", ")}, func(s string) bool { return s == "" }), ", ")
+	if order != "" {
+		order = "ORDER BY " + order
 	}
 
 	sqlStatement := fmt.Sprintf(
 		"SELECT %s\nFROM\n%s %s %s\nOFFSET %d\nLIMIT %d",
-		fields.String(),
-		tableName,
+		strings.Join(fields, ", "),
+		rel.SQL,
 		where,
-		orderBy,
+		order,
 		offset,
 		limit,
 	)
@@ -443,8 +487,8 @@ func (pg *Postgres) ListRecords(
 	}
 	defer func() { _ = rows.Close() }()
 
+	var records []map[string]any
 	for rows.Next() {
-		record := make(map[string]any)
 		values := make([]any, len(columns))
 		for i := range values {
 			values[i] = new(any)
@@ -453,82 +497,52 @@ func (pg *Postgres) ListRecords(
 		if err != nil {
 			return nil, nil, 0, err
 		}
-
+		record := make(map[string]any, len(columns))
 		for i, column := range columns {
-			rawVal := *(values[i].(*any))
-			var conv any
-			lowerType := strings.ToLower(column.DataType)
-			switch v := rawVal.(type) {
-			case nil:
-				conv = "NULL"
-			case []byte:
-				strVal := strings.TrimSpace(string(v))
-				if strVal == "" {
-					conv = "NULL"
-				} else if lowerType != "" && strings.Contains(lowerType, "numeric") {
-					if f, err := strconv.ParseFloat(strVal, 64); err == nil {
-						conv = fmt.Sprintf("%.2f", f)
-					} else {
-						conv = strVal
-					}
-				} else {
-					conv = strVal
-				}
-			case time.Time:
-				conv = v.Format(time.RFC3339Nano)
-				if lowerType == "date" {
-					conv = v.Format(time.DateOnly)
-				}
-			default:
-				s := fmt.Sprintf("%v", v)
-				if s == "<nil>" {
-					conv = "NULL"
-				} else if lowerType != "" && strings.Contains(lowerType, "numeric") {
-					if f, err := strconv.ParseFloat(s, 64); err == nil {
-						conv = fmt.Sprintf("%.2f", f)
-					} else {
-						conv = s
-					}
-				} else {
-					conv = s
-				}
-			}
-			record[column.ColumnName] = conv
+			record[column.ColumnName] = displayValue(*(values[i].(*any)), column.DataType)
 		}
 		records = append(records, record)
 	}
-	return records, columns, totalRecords, nil
+	return records, columns, totalRecords, rows.Err()
+}
+
+// displayValue is v as the grid shows and edits it: nil stays nil (NULL),
+// the rest is text exactly as stored, never rounded or trimmed, since the
+// text of a key is what finds its row again.
+func displayValue(v any, dataType string) any {
+	switch x := v.(type) {
+	case nil:
+		return nil
+	case []byte:
+		return string(x)
+	case time.Time:
+		if dataType == "date" {
+			return x.Format(time.DateOnly)
+		}
+		return x.Format(time.RFC3339Nano)
+	}
+	return fmt.Sprint(v)
 }
 
 func (pg *Postgres) GetPrimaryKeyColumns(tableName string) ([]string, error) {
-	const query = `
-        SELECT kcu.column_name
-        FROM information_schema.table_constraints tco
-        JOIN information_schema.key_column_usage kcu
-             ON kcu.constraint_name = tco.constraint_name
-             AND kcu.constraint_schema = tco.constraint_schema
-        WHERE tco.constraint_type = 'PRIMARY KEY'
-          AND tco.table_name = $1
-        ORDER BY kcu.ordinal_position
-    `
-	rows, err := pg.DB.Query(query, tableName)
+	rel, err := pg.Resolve(tableName)
 	if err != nil {
-		return nil, fmt.Errorf("erro ao consultar PK: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
+	return pg.relPrimaryKey(rel)
+}
 
+func (pg *Postgres) relPrimaryKey(rel Rel) ([]string, error) {
+	const query = `SELECT a.attname
+	FROM pg_index i
+	JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+	WHERE i.indrelid = $1 AND i.indisprimary
+	ORDER BY array_position(i.indkey::int2[], a.attnum)`
 	var pkColumns []string
-	for rows.Next() {
-		var colName string
-		if err := rows.Scan(&colName); err != nil {
-			return nil, fmt.Errorf("erro ao varrer resultado PK: %w", err)
-		}
-		pkColumns = append(pkColumns, colName)
+	err := pg.DB.Select(&pkColumns, query, rel.OID)
+	if err != nil {
+		return nil, fmt.Errorf("primary key of %s: %w", rel.SQL, err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("erro final ao varrer PK: %w", err)
-	}
-
 	return pkColumns, nil
 }
 
@@ -557,7 +571,11 @@ func (pg *Postgres) UpdateDataCell(
 	pkField []string,
 	pkValue []any,
 ) error {
-	columns, err := pg.ListColumns(tableName)
+	rel, err := pg.Resolve(tableName)
+	if err != nil {
+		return err
+	}
+	columns, err := pg.relColumns(rel)
 	if err != nil {
 		return fmt.Errorf("error fetching column types: %w", err)
 	}
@@ -590,28 +608,33 @@ func (pg *Postgres) UpdateDataCell(
 
 	updateCast := ""
 	if dt, ok := colTypes[fieldName]; ok && strings.Contains(strings.ToLower(dt), "timestamp") {
-		updateCast = fmt.Sprintf("::%s", dt)
+		updateCast = "::" + dt
 	}
 
 	whereClauses := make([]string, len(pkField))
 	for i, field := range pkField {
-		whereClauses[i] = fmt.Sprintf("\"%s\" = $%d", field, i+2)
+		whereClauses[i] = fmt.Sprintf("%s = $%d", QuoteName(field), i+2)
 	}
-	whereClauseStr := strings.Join(whereClauses, " AND ")
 
-	sqlStatement := fmt.Sprintf(
-		"UPDATE \"%s\" SET \"%s\" = $1%s WHERE %s",
-		tableName,
-		fieldName,
+	// ONLY: an inherited child holding the same key is another row.
+	sqlStatement := fmt.Sprintf( // #nosec G201 -- names quoted by Resolve and QuoteName, values bound
+		"UPDATE ONLY %s SET %s = $1%s WHERE %s",
+		rel.SQL,
+		QuoteName(fieldName),
 		updateCast,
-		whereClauseStr,
+		strings.Join(whereClauses, " AND "),
 	)
 
 	args := make([]any, 0, len(pkValue)+1)
 	args = append(args, newValue)
 	args = append(args, pkValue...)
 
-	result, err := pg.DB.Exec(sqlStatement, args...)
+	tx, err := pg.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.Exec(sqlStatement, args...)
 	if err != nil {
 		return fmt.Errorf("error in update: %w", err)
 	}
@@ -619,11 +642,10 @@ func (pg *Postgres) UpdateDataCell(
 	if err != nil {
 		return fmt.Errorf("error getting affected rows: %w", err)
 	}
-	if rowsAffected == 0 {
-		return errors.New("no rows updated")
+	if rowsAffected != 1 {
+		return fmt.Errorf("the key matches %d rows, not one: nothing changed", rowsAffected)
 	}
-
-	return nil
+	return tx.Commit()
 }
 
 func (pg *Postgres) QueryRowContext(
@@ -634,149 +656,95 @@ func (pg *Postgres) QueryRowContext(
 	return pg.DB.QueryRowContext(ctx, query, args...)
 }
 
-func (pg *Postgres) CreateUpdateStatement(tableName string, headers []string, row []string) (string, error) {
-	pks, err := pg.GetPrimaryKeyColumns(tableName)
+// CreateUpdateStatement writes an UPDATE of row (nil is NULL) for the user
+// to edit and run: every value a literal, every name quoted.
+func (pg *Postgres) CreateUpdateStatement(tableName string, headers []string, row []any) (string, error) {
+	if len(row) != len(headers) {
+		return "", errors.New("no row selected")
+	}
+	rel, err := pg.Resolve(tableName)
 	if err != nil {
-		return "", fmt.Errorf("error fetching primary key columns: %w", err)
+		return "", err
+	}
+	pks, err := pg.relPrimaryKey(rel)
+	if err != nil {
+		return "", err
 	}
 	if len(pks) == 0 {
-		return "", fmt.Errorf("no primary key columns found for table %s", tableName)
+		return "", fmt.Errorf("no primary key columns found for table %s", rel.SQL)
 	}
-
-	columns, err := pg.ListColumns(tableName)
+	columns, err := pg.relColumns(rel)
 	if err != nil {
 		return "", fmt.Errorf("error fetching column types: %w", err)
 	}
-
 	colTypes := make(map[string]string)
 	for _, col := range columns {
-		colTypes[col.ColumnName] = col.DataType
+		colTypes[col.ColumnName] = strings.ToLower(col.DataType)
 	}
 
-	formatValue := func(colName, value string) string {
-		if strings.ToUpper(value) == "NULL" {
-			return "NULL"
-		}
-
-		dataType, exists := colTypes[colName]
-		if !exists {
-			return fmt.Sprintf("'%s'", value)
-		}
-
-		lowerType := strings.ToLower(dataType)
-
-		if strings.Contains(lowerType, "int") ||
-			strings.Contains(lowerType, "serial") ||
-			strings.Contains(lowerType, "decimal") ||
-			strings.Contains(lowerType, "numeric") ||
-			strings.Contains(lowerType, "real") ||
-			strings.Contains(lowerType, "double") ||
-			strings.Contains(lowerType, "float") {
-			return value
-		}
-
-		if lowerType == "boolean" {
-			lowerValue := strings.ToLower(value)
-			if lowerValue == "true" || lowerValue == "false" {
-				return lowerValue
-			}
-			return fmt.Sprintf("'%s'", value)
-		}
-
-		if strings.Contains(lowerType, "json") ||
-			strings.Contains(lowerType, "timestamp") ||
-			strings.Contains(lowerType, "date") {
-			return fmt.Sprintf("'%s'", value)
-		}
-
-		return fmt.Sprintf("'%s'", value)
-	}
-
-	var setClauseStrings []string
+	var sets, wheres []string
 	for i, col := range headers {
-		if slices.Contains(pks, col) {
-			continue
-		}
-		value := row[i]
-		formattedValue := formatValue(col, value)
-		comma := ","
-		if i == len(headers)-1 {
-			comma = ""
-		}
-		clause := fmt.Sprintf(`    %q = %s%s`, col, formattedValue, comma)
-		setClauseStrings = append(setClauseStrings, clause)
-	}
-
-	if len(setClauseStrings) == 0 {
-		return "", fmt.Errorf("there are no columns to update")
-	}
-
-	maxSetLength := 0
-	for _, s := range setClauseStrings {
-		if len(s) > maxSetLength {
-			maxSetLength = len(s)
+		if !slices.Contains(pks, col) {
+			sets = append(sets, fmt.Sprintf("    %s = %s", QuoteName(col), sqlValue(row[i], colTypes[col])))
 		}
 	}
-
-	var setClauseLines []string
-	counter := 1
-	for _, s := range setClauseStrings {
-		padding := strings.Repeat(" ", maxSetLength-len(s))
-		setClauseLines = append(setClauseLines, fmt.Sprintf("%s%s -- %d", s, padding, counter))
-		counter++
+	if len(sets) == 0 {
+		return "", errors.New("there are no columns to update")
 	}
-
-	var whereClauseStrings []string
 	for _, pk := range pks {
-		idx := indexOf(headers, pk)
+		idx := slices.Index(headers, pk)
 		if idx < 0 {
 			return "", fmt.Errorf("column %s not found in headers", pk)
 		}
-		value := row[idx]
-		formattedValue := formatValue(pk, value)
-		var clause string
-		if strings.ToUpper(value) == "NULL" {
-			clause = fmt.Sprintf(`"%s" IS NULL`, pk)
-		} else {
-			clause = fmt.Sprintf(`"%s" = %s`, pk, formattedValue)
+		if row[idx] == nil {
+			wheres = append(wheres, QuoteName(pk)+" IS NULL")
+			continue
 		}
-		whereClauseStrings = append(whereClauseStrings, clause)
+		wheres = append(wheres, QuoteName(pk)+" = "+sqlValue(row[idx], colTypes[pk]))
 	}
 
-	maxWhereLength := 0
-	for _, s := range whereClauseStrings {
-		if len(s) > maxWhereLength {
-			maxWhereLength = len(s)
+	n := 0
+	number := func(lines []string, sep string) string {
+		width := 0
+		for _, l := range lines {
+			width = max(width, len(l)+len(sep))
 		}
-	}
-
-	var whereClauseLines []string
-	for i, s := range whereClauseStrings {
-		padding := strings.Repeat(" ", maxWhereLength-len(s))
-		connector := "  AND "
-		if i == 0 {
-			connector = ""
+		out := make([]string, len(lines))
+		for i, l := range lines {
+			n++
+			if i < len(lines)-1 {
+				l += sep
+			}
+			out[i] = fmt.Sprintf("%-*s -- %d", width, l, n)
 		}
-		whereClauseLines = append(whereClauseLines, fmt.Sprintf("%s%s%s -- %d", connector, s, padding, counter))
-		counter++
+		return strings.Join(out, "\n")
 	}
-
-	updateStatement := fmt.Sprintf(`UPDATE %q
-SET
-%s
-WHERE %s
-;`, tableName, strings.Join(setClauseLines, "\n"),
-		strings.Join(whereClauseLines, "\n"))
-	return updateStatement, nil
+	setBlock := number(sets, ",")
+	for i := 1; i < len(wheres); i++ {
+		wheres[i] = "  AND " + wheres[i]
+	}
+	return fmt.Sprintf("UPDATE ONLY %s\nSET\n%s\nWHERE %s\n;", rel.SQL, setBlock, number(wheres, "")), nil
 }
 
-func indexOf(slice []string, item string) int {
-	for i, s := range slice {
-		if s == item {
-			return i
-		}
+// sqlValue is v as a literal for a column of dataType: numbers and booleans
+// bare when they are what they claim, everything else quoted.
+func sqlValue(v any, dataType string) string {
+	if v == nil {
+		return "NULL"
 	}
-	return -1
+	s := fmt.Sprint(v)
+	switch {
+	case strings.Contains(dataType, "int"), strings.Contains(dataType, "numeric"),
+		strings.Contains(dataType, "decimal"), strings.Contains(dataType, "real"),
+		strings.Contains(dataType, "double"):
+		_, err := strconv.ParseFloat(s, 64)
+		if err == nil && strings.Trim(s, "0123456789.eE+-") == "" { // not NaN, Inf or hex
+			return s
+		}
+	case dataType == "boolean" && (s == "true" || s == "false"):
+		return s
+	}
+	return quoteLiteral(s)
 }
 
 // QuerySQL executes the given SQL query and returns records with column definitions.
@@ -785,7 +753,7 @@ func (pg *Postgres) QuerySQL(query string) ([]map[string]any, []ColumnInfo, erro
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Get column names and types.
 	columnNames, err := rows.Columns()
@@ -824,7 +792,7 @@ func (pg *Postgres) QuerySQL(query string) ([]map[string]any, []ColumnInfo, erro
 		}
 		records = append(records, record)
 	}
-	return records, columns, nil
+	return records, columns, rows.Err()
 }
 
 func (pg *Postgres) RenameTable(oldName, newName string) error {

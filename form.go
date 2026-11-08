@@ -61,7 +61,7 @@ func ExtractParameters(sqlStr string) []Parameter {
 // fillParameters puts each value in place of every token of its parameter.
 func fillParameters(sql string, params []Parameter, values []string) string {
 	for i, p := range params {
-		re := regexp.MustCompile(`\{\{\s*` + regexp.QuoteMeta(p.Name) + `[^}]*\}\}`)
+		re := regexp.MustCompile(`\{\{\s*` + regexp.QuoteMeta(p.Name) + `\s*(:[^}]*)?\}\}`) // the whole name: {{id}} is not {{id2}}
 		sql = re.ReplaceAllLiteralString(sql, values[i])
 	}
 	return sql
@@ -121,8 +121,7 @@ func (f *paramForm) draw(_ *app, c *screen.Canvas, top, left, _, cols int) {
 	for i := range f.form.Fields {
 		f.form.Fields[i].Width = max(10, min(60, cols-f.labelw-6))
 	}
-	end := f.form.Draw(c, top+1, left+1, f.labelw)
-	kit.Note(c, end+1, left+1, cols-2, kit.Err, f.form.Note)
+	f.form.Draw(c, top+1, left+1, f.labelw) // the form draws its own note
 }
 
 func (f *paramForm) key(a *app, k screen.Key) {

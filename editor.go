@@ -49,30 +49,29 @@ func updateCell(pg *db.Postgres, table string, header []string, columns []db.Col
 func formatTimestamp(input string) (string, error) {
 	t, err := time.Parse(time.RFC3339Nano, input)
 	if err == nil {
-		return t.Format(time.RFC3339), nil
+		return t.Format(time.RFC3339Nano), nil
 	}
 	t, err = time.Parse("2006-01-02 15:04:05.999999 -0700 MST", input)
 	if err == nil {
-		return t.Format(time.RFC3339), nil
+		return t.Format(time.RFC3339Nano), nil
 	}
 	return "", fmt.Errorf("invalid timestamp: %s", input)
 }
 
-func rowJSON(header, row []string) (string, error) {
+func rowJSON(header []string, row []any) (string, error) {
 	if row == nil {
 		return "", errors.New("no row selected")
 	}
 	record := make(map[string]any, len(header))
 	for i, name := range header {
-		v := row[i]
-		f, err := strconv.ParseFloat(v, 64)
-		switch {
-		case err == nil:
+		record[name] = row[i]
+		s, ok := row[i].(string)
+		if !ok {
+			continue // nil: null
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err == nil && strings.Trim(s, "0123456789.eE+-") == "" {
 			record[name] = f
-		case v == "NULL":
-			record[name] = nil
-		default:
-			record[name] = v
 		}
 	}
 	out, err := json.MarshalIndent(record, "", "  ")

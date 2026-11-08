@@ -93,6 +93,7 @@ func (l *tableList) apply(a *app, filter string) {
 		a.say(kit.Warn, "filter: %v", err)
 		return
 	}
+	a.note = "" // a complaint about a half-typed expression is over
 	l.shown = nil
 	for _, t := range l.all {
 		if re.MatchString(t.Name) {

@@ -14,6 +14,10 @@ type ColumnInfoEx struct {
 }
 
 func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
+	rel, err := pg.Resolve(tableName)
+	if err != nil {
+		return "", err
+	}
 	// Retrieve columns with their default values.
 	const sqlStatement = `
         SELECT
@@ -21,12 +25,11 @@ func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
             data_type,
             column_default
         FROM information_schema.columns
-        WHERE table_name = $1
-          AND table_schema = ANY($2::text[])
+        WHERE table_schema = $1 AND table_name = $2
         ORDER BY column_name;  -- initially ordered alphabetically
     `
 	var cols []ColumnInfoEx
-	if err := pg.DB.Select(&cols, sqlStatement, tableName, pg.schemas); err != nil {
+	if err := pg.DB.Select(&cols, sqlStatement, rel.Schema, rel.Name); err != nil {
 		return "", fmt.Errorf("error fetching columns: %w", err)
 	}
 	if len(cols) == 0 {
@@ -34,7 +37,7 @@ func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
 	}
 
 	// Retrieve primary key column names.
-	pkColumns, err := pg.GetPrimaryKeyColumns(tableName)
+	pkColumns, err := pg.relPrimaryKey(rel)
 	if err != nil {
 		return "", fmt.Errorf("error fetching primary keys: %w", err)
 	}
@@ -100,7 +103,7 @@ func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
 				val = "''"
 			}
 		}
-		baseCol := fmt.Sprintf("\t\"%s\"", col.ColumnName)
+		baseCol := "\t" + QuoteName(col.ColumnName)
 		baseVal := fmt.Sprintf("\t%s", val)
 		dataList = append(dataList, colData{baseCol: baseCol, baseVal: baseVal, col: col})
 	}
@@ -137,13 +140,13 @@ func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
 	valuesBlock := strings.Join(valueLines, "\n")
 
 	stmt := fmt.Sprintf(`
-INSERT INTO "%s"
+INSERT INTO %s
 (
 %s
 ) VALUES (
 %s
 );
-`, tableName, columnsBlock, valuesBlock)
+`, rel.SQL, columnsBlock, valuesBlock)
 
 	return stmt, nil
 }

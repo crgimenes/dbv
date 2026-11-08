@@ -24,7 +24,7 @@ func TestParameters(t *testing.T) {
 func gridOf(rows int) *tableData {
 	d := &tableData{name: "t", pk: "id", header: []string{"id", "name", "note"}}
 	for i := range rows {
-		d.rows = append(d.rows, []string{strings.Repeat("9", 1+i%3), "ação 日本", "two\nlines"})
+		d.add([]any{strings.Repeat("9", 1+i%3), "ação 日本", "two\nlines"})
 	}
 	d.total = rows
 	d.measure()

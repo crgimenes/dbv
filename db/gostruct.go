@@ -19,15 +19,18 @@ func toTitle(s string) string {
 }
 
 func (pg *Postgres) CreateGoStructDefinition(tableName string) (string, error) {
-	structName := toTitle(strings.ReplaceAll(tableName, "_", " "))
+	rel, err := pg.Resolve(tableName)
+	if err != nil {
+		return "", err
+	}
+	structName := toTitle(strings.ReplaceAll(rel.Name, "_", " "))
 
 	const sqlStatement = `
         SELECT
             column_name,
             data_type
         FROM information_schema.columns
-        WHERE table_name = $1
-          AND table_schema = ANY($2::text[])
+        WHERE table_schema = $1 AND table_name = $2
         ORDER BY column_name;
     `
 	type simpleColumnInfo struct {
@@ -35,7 +38,7 @@ func (pg *Postgres) CreateGoStructDefinition(tableName string) (string, error) {
 		DataType   string `db:"data_type"`
 	}
 	var cols []simpleColumnInfo
-	if err := pg.DB.Select(&cols, sqlStatement, tableName, pg.schemas); err != nil {
+	if err := pg.DB.Select(&cols, sqlStatement, rel.Schema, rel.Name); err != nil {
 		return "", fmt.Errorf("error fetching columns: %w", err)
 	}
 	if len(cols) == 0 {

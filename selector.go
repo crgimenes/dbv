@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 
 	"github.com/crgimenes/filo-term-go/kit"
@@ -56,6 +55,7 @@ func (s *selector) apply(a *app, filter string) {
 		a.say(kit.Warn, "filter: %v", err)
 		return
 	}
+	a.note = "" // a complaint about a half-typed expression is over
 	s.shownT = nil
 	for _, t := range s.tables {
 		if re.MatchString(t.Name) {
@@ -104,7 +104,7 @@ func (s *selector) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
 }
 
 func (s *selector) write(a *app, what, text string) {
-	err := os.WriteFile(s.out, []byte(text), 0o600)
+	err := writeOutput(s.out, text)
 	if err != nil {
 		a.fail(err)
 		return

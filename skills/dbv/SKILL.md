@@ -1,6 +1,6 @@
 ---
 name: dbv
-description: Inspect PostgreSQL databases configured in dbv (~/.config/dbv/init.filo) from the command line — list connections, tables and columns, read rows, run read-only SQL, generate a Go struct or an INSERT template. Use whenever you need to look at data or schema in one of the user's databases instead of guessing, or instead of calling psql with a password you would have to handle.
+description: Inspect PostgreSQL databases configured in dbv (init.filo in ~/Library/Application Support/dbv on macOS, ~/.config/dbv on Linux) from the command line — list connections, tables and columns, read rows, run read-only SQL, generate a Go struct or an INSERT template. Use whenever you need to look at data or schema in one of the user's databases instead of guessing, or instead of calling psql with a password you would have to handle.
 ---
 
 # dbv

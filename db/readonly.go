@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Result is a query answer in column order; Truncated says rows past the
@@ -25,6 +27,10 @@ func (pg *Postgres) QueryReadOnly(ctx context.Context, limit int, query string, 
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// The extended protocol takes one statement: "COMMIT; DELETE ..." is
+	// refused by the server instead of ending the READ ONLY transaction,
+	// even when the URL asks for the simple protocol.
+	args = append([]any{pgx.QueryExecModeDescribeExec}, args...)
 	rows, err := tx.QueryxContext(ctx, query, args...)
 	if err != nil {
 		return res, err
@@ -75,13 +81,4 @@ func plain(v any, dataType string) any {
 		return x.Format(time.RFC3339Nano)
 	}
 	return v
-}
-
-// QuoteIdent quotes a possibly schema-qualified name ("s.t" becomes "s"."t").
-func QuoteIdent(name string) string {
-	parts := strings.Split(name, ".")
-	for i, p := range parts {
-		parts[i] = `"` + strings.ReplaceAll(p, `"`, `""`) + `"`
-	}
-	return strings.Join(parts, ".")
 }

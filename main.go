@@ -30,16 +30,15 @@ func fileExists(name string) bool {
 	return true
 }
 
+// getInitFiloPath is init.filo in the platform's config directory:
+// ~/Library/Application Support/dbv on macOS, $XDG_CONFIG_HOME/dbv (or
+// ~/.config/dbv) on Linux and the BSDs, %AppData%\dbv on Windows.
 func getInitFiloPath() string {
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			log.Fatal("Failed to get home directory:", err)
-		}
-		configHome = filepath.Join(home, ".config")
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		log.Fatal("no config directory: ", err)
 	}
-	return filepath.Join(configHome, "dbv", "init.filo")
+	return filepath.Join(dir, "dbv", "init.filo")
 }
 
 func configPath() string {
@@ -61,6 +60,11 @@ func maskDBURL(dbURL string) (string, error) {
 		if _, ok := u.User.Password(); ok {
 			u.User = url.UserPassword(username, "...")
 		}
+	}
+	q := u.Query()
+	if q.Has("password") { // libpq and pgx take it from the query too
+		q.Set("password", "...")
+		u.RawQuery = q.Encode()
 	}
 
 	return u.String(), nil
@@ -175,10 +179,13 @@ func main() {
 		files = append(files, arg)
 	}
 
-	// Files named on the command line replace the default config.
-	configs := loadDBConfigs(configPath())
+	// Files named on the command line replace the default config, which is
+	// then not read at all.
+	var configs []db.DBConfig
+	if len(files) == 0 {
+		configs = loadDBConfigs(configPath())
+	}
 	if len(files) > 0 {
-		configs = nil
 		for _, f := range files {
 			if !fileExists(f) {
 				fmt.Fprintf(os.Stderr, "dbv: file not found: %q\n", f)
