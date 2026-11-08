@@ -368,9 +368,11 @@ type ColumnInfo struct {
 func (pg *Postgres) ListColumns(tableName string) ([]ColumnInfo, error) {
 	const sqlStatement = `SELECT column_name, data_type
 	FROM information_schema.columns
-	WHERE table_name = $1;`
+	WHERE table_name = $1
+	  AND table_schema = ANY($2::text[])
+	ORDER BY array_position($2::text[], table_schema::text), ordinal_position;`
 	var columns []ColumnInfo
-	err := pg.DB.Select(&columns, sqlStatement, tableName)
+	err := pg.DB.Select(&columns, sqlStatement, tableName, pg.schemas)
 	if err != nil {
 		return nil, err
 	}
@@ -439,6 +441,7 @@ func (pg *Postgres) ListRecords(
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("error executing query: %v %v", sqlStatement, err)
 	}
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		record := make(map[string]any)
@@ -473,6 +476,9 @@ func (pg *Postgres) ListRecords(
 				}
 			case time.Time:
 				conv = v.Format(time.RFC3339Nano)
+				if lowerType == "date" {
+					conv = v.Format(time.DateOnly)
+				}
 			default:
 				s := fmt.Sprintf("%v", v)
 				if s == "<nil>" {

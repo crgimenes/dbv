@@ -7,9 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/crgimenes/filo-term-go/kit"
+	"github.com/crgimenes/filo-term-go/screen"
 
 	"github.com/crgimenes/dbv/db"
 )
@@ -21,98 +20,10 @@ type TableInfo struct {
 	PrimaryKey string
 }
 
-const (
-	CommandRename = "rename"
-	CommandClear  = "clear"
-	CommandHelp   = "help"
-	CommandQuit   = "quit"
-)
+const userViewType = "User defined view"
 
-type modelList struct {
-	commandInputValue string
-	commandMode       bool
-	currentCommand    string
-	err               error
-	offset            int
-	originalData      []TableInfo
-	quitting          bool
-	selected          int
-	showHelp          bool
-	statusMessage     string
-	tableData         []TableInfo
-	textInput         textinput.Model
-	textInputActive   bool
-	windowHeight      int
-	windowWidth       int
-}
-
-type userViewMsg struct {
-	name    string
-	sqlPath string
-}
-
-var (
-	rowHighlight = lipgloss.NewStyle().
-			Foreground(themeForeground).
-			Background(themeAccent).
-			Bold(true)
-
-	headerStyle = lipgloss.NewStyle().
-			Foreground(themeAccent).
-			Background(themeBackground).
-			Bold(true)
-
-	tableCellStyle = lipgloss.NewStyle().
-			Foreground(themeForeground).
-			Background(themeBackground)
-)
-
-func fitText(s string, width int) string {
-	if len(s) > width {
-		if width > 3 {
-			return s[:width-3] + "..."
-		}
-		return s[:width]
-	}
-	return s
-}
-
-func formatLeft(s string, width int) string {
-	return fmt.Sprintf("%-*s", width, fitText(s, width))
-}
-
-func formatRight(s string, width int) string {
-	return fmt.Sprintf("%*s", width, fitText(s, width))
-}
-
-func initialModelList() modelList {
-	data, err := getTableList()
-	if err != nil {
-		return modelList{
-			err: err,
-		}
-	}
-
-	ti := textinput.New()
-	ti.Prompt = "/"
-	ti.Placeholder = "regex filter"
-	ti.CharLimit = 256
-	ti.Width = 20
-
-	return modelList{
-		originalData:    data,
-		tableData:       data,
-		selected:        0,
-		offset:          0,
-		textInput:       ti,
-		textInputActive: false,
-		commandMode:     false,
-		statusMessage:   "",
-	}
-}
-
-func getTableList() ([]TableInfo, error) {
-	lt, err := db.Storage.ListTablesAndViews()
+func getTableList(pg *db.Postgres) ([]TableInfo, error) {
+	lt, err := pg.ListTablesAndViews()
 	if err != nil {
 		return nil, err
 	}
@@ -123,391 +34,228 @@ func getTableList() ([]TableInfo, error) {
 		if t.PrimaryKey.Valid {
 			pk = t.PrimaryKey.String
 		}
-		data[i] = TableInfo{
-			Name:       t.Name,
-			Type:       t.Type,
-			Size:       t.Size,
-			PrimaryKey: pk,
-		}
+		data[i] = TableInfo{Name: t.Name, Type: t.Type, Size: t.Size, PrimaryKey: pk}
 	}
 
-	if userViewsDir != "" {
-		files, err := os.ReadDir(userViewsDir)
-		if err == nil {
-			var views []TableInfo
-			for _, f := range files {
-				if !f.IsDir() && filepath.Ext(f.Name()) == ".sql" {
-					name := strings.TrimSuffix(f.Name(), ".sql")
-					views = append(views, TableInfo{
-						Name:       name,
-						Type:       "User defined view",
-						Size:       "-",
-						PrimaryKey: "-",
-					})
-				}
-			}
-			data = append(views, data...)
+	if userViewsDir == "" {
+		return data, nil
+	}
+	files, err := os.ReadDir(userViewsDir)
+	if err != nil {
+		return data, nil // a views directory that went away is not a reason to hide the tables
+	}
+	var views []TableInfo
+	for _, f := range files {
+		if !f.IsDir() && filepath.Ext(f.Name()) == ".sql" {
+			views = append(views, TableInfo{
+				Name:       strings.TrimSuffix(f.Name(), ".sql"),
+				Type:       userViewType,
+				Size:       "-",
+				PrimaryKey: "-",
+			})
 		}
 	}
-	return data, nil
+	return append(views, data...), nil
 }
 
-func (m modelList) Init() tea.Cmd {
-	return nil
+// tableList is the first screen: every table and view, a regex filter.
+type tableList struct {
+	all    []TableInfo
+	shown  []TableInfo
+	filter string
+	table  kit.Table
 }
 
-func (m modelList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.textInputActive {
-		switch msg := msg.(type) {
-		case tea.KeyMsg:
-			switch msg.String() {
-			case "enter":
+func newTableList(a *app) view {
+	l := &tableList{}
+	l.reload(a)
+	return l
+}
 
-				// Handle renaming a table
-				if m.commandMode && m.currentCommand == CommandRename {
-					m.commandMode = false
-					m.currentCommand = ""
-
-					newName := m.textInput.Value()
-					oldName := m.tableData[m.selected].Name
-					if newName == "" || newName == oldName {
-						m.statusMessage = "Invalid or same table name"
-						return m, nil
-					}
-					err := db.Storage.RenameTable(
-						oldName,
-						newName,
-					)
-					if err != nil {
-						m.statusMessage = fmt.Sprintf("Failed to rename table: %v", err)
-						return m, nil
-					}
-					m.statusMessage = fmt.Sprintf("Table '%s' renamed to '%s'", oldName, newName)
-					m.textInputActive = false
-					m.textInput.SetValue("")
-					m.tableData = m.originalData
-
-					// TODO: Refresh the table data
-					data, err := getTableList()
-					if err != nil {
-						m.statusMessage = fmt.Sprintf("Failed to refresh table list: %v", err)
-						return m, nil
-					}
-					m.originalData = data
-					m.tableData = data
-
-					return m, nil
-				}
-
-				if m.commandMode {
-					cmd := m.textInput.Value()
-					m.commandInputValue = cmd
-					m.textInputActive = false
-					m.commandMode = false
-
-					switch cmd {
-					case "q", "Q", "quit":
-						m.currentCommand = CommandQuit
-						m.commandMode = true
-						m.quitting = true
-						return m, tea.Quit
-					case "clear":
-						m.currentCommand = CommandClear
-						m.commandMode = true
-						m.tableData = m.originalData
-						m.textInput.SetValue("")
-						m.statusMessage = "Cleared filter"
-					case "help":
-						m.currentCommand = CommandHelp
-						m.commandMode = true
-						m.showHelp = true
-					case "rename":
-						tableName := m.tableData[m.selected].Name
-						if tableName == "" {
-							m.statusMessage = "No table selected"
-							return m, nil
-						}
-						m.textInput.SetValue("")
-						m.textInput.Prompt = "rename " + tableName + " to: "
-						m.textInput.Placeholder = "new table name"
-						m.textInput.SetValue(tableName)
-						m.textInput.Focus()
-						m.textInputActive = true
-						m.commandMode = true
-						m.currentCommand = CommandRename
-						m.statusMessage = "enter to rename, esc to cancel"
-						return m, nil
-					default:
-						if cmd != "" {
-							m.statusMessage = fmt.Sprintf("Unknown command: %q", cmd)
-						}
-					}
-
-					return m, nil
-				}
-
-				m.textInputActive = false
-				return m, nil
-
-			case "up", "down":
-				m.textInputActive = false
-				m.commandMode = false
-				return m, nil
-
-			case "esc":
-				m.textInputActive = false
-				m.commandMode = false
-				m.currentCommand = ""
-				m.textInput.SetValue("")
-				m.statusMessage = ""
-
-				if !m.commandMode {
-					m.tableData = m.originalData
-					m.selected = 0
-					m.offset = 0
-				}
-
-				return m, nil
-			}
-		}
-
-		var cmd tea.Cmd
-		m.textInput, cmd = m.textInput.Update(msg)
-
-		if !m.commandMode {
-			filter := m.textInput.Value()
-			if filter == "" {
-				m.tableData = m.originalData
-			} else {
-				if re, err := regexp.Compile(filter); err != nil {
-					m.tableData = m.originalData
-				} else {
-					var filtered []TableInfo
-					for _, row := range m.originalData {
-						if re.MatchString(row.Name) {
-							filtered = append(filtered, row)
-						}
-					}
-					m.tableData = filtered
-				}
-			}
-			m.selected = 0
-			m.offset = 0
-		}
-
-		return m, cmd
+func (l *tableList) reload(a *app) {
+	data, err := getTableList(a.pg)
+	if err != nil {
+		a.fail(err)
 	}
+	l.all = data
+	l.apply(a, l.filter)
+}
 
-	switch msg := msg.(type) {
-	case errMsg:
-		m.err = msg
-		return m, nil
-
-	case tea.WindowSizeMsg:
-		m.windowWidth = msg.Width
-		m.windowHeight = msg.Height
-		return m, nil
-
-	case tea.KeyMsg:
-		if m.err != nil {
-			m.err = nil
-			return m, nil
+func (l *tableList) apply(a *app, filter string) {
+	l.filter = filter
+	l.shown = l.all
+	l.table.Cursor = 0
+	if filter == "" {
+		return
+	}
+	re, err := regexp.Compile(filter)
+	if err != nil {
+		a.say(kit.Warn, "filter: %v", err)
+		return
+	}
+	l.shown = nil
+	for _, t := range l.all {
+		if re.MatchString(t.Name) {
+			l.shown = append(l.shown, t)
 		}
+	}
+}
 
-		if m.showHelp {
-			m.showHelp = false
-			return m, nil
+func (l *tableList) title() string {
+	return fmt.Sprintf("dbv %s · %s", GitTag, DBTitle)
+}
+
+func (l *tableList) hints() []kit.Hint {
+	return []kit.Hint{
+		{Key: "↑↓", What: "move"}, {Key: "enter", What: "open"}, {Key: "/", What: "filter"},
+		{Key: ":", What: "command"}, {Key: "?", What: "help"}, {Key: "q", What: "quit"},
+	}
+}
+
+func (l *tableList) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
+	cols4 := kit.FillCols([]kit.Col{
+		{Header: "NAME", Width: max(12, cols*2/5)},
+		{Header: "TYPE", Width: max(8, cols/6)},
+		{Header: "SIZE", Width: 10},
+		{Header: "PRIMARY KEY", Width: 0},
+	}, cols)
+	l.table.Draw(c, top, left, cols4, len(l.shown), func(i int) []string {
+		t := l.shown[i]
+		return []string{t.Name, t.Type, kit.PadLeft(t.Size, 10), t.PrimaryKey}
+	}, rows-2)
+}
+
+func (l *tableList) status() string {
+	s := fmt.Sprintf("%d of %d", min(l.table.Cursor+1, len(l.shown)), len(l.shown))
+	if l.filter != "" {
+		s += " · /" + l.filter
+	}
+	return s
+}
+
+func (l *tableList) key(a *app, k screen.Key) {
+	_, h := a.t.Size()
+	if l.table.Move(vimKey(k), len(l.shown), h-8) {
+		return
+	}
+	switch k {
+	case 'q', screen.Ctrl('c'):
+		a.quit = true
+	case screen.KeyEsc:
+		if l.filter != "" {
+			l.apply(a, "")
+			return
 		}
+		a.pop()
+	case '/':
+		a.ask("/", l.filter, func(a *app, line string) { l.apply(a, line) })
+		a.onEdit = func(a *app, line string) { l.apply(a, line) }
+	case ':':
+		a.ask(":", "", l.command)
+	case '?':
+		a.push(&helpView{lines: listHelp})
+	case screen.KeyEnter:
+		l.open(a)
+	}
+}
 
-		switch msg.String() {
-		case "/":
-			m.textInputActive = true
-			m.commandMode = false
-			m.textInput.Prompt = "/"
-			m.textInput.Placeholder = "regex filter"
-			m.textInput.Focus()
-			m.statusMessage = ""
-			return m, nil
+func (l *tableList) open(a *app) {
+	if len(l.shown) == 0 {
+		return
+	}
+	t := l.shown[l.table.Cursor]
+	if t.Type == userViewType {
+		openUserView(a, t.Name)
+		return
+	}
+	v, err := newTableData(a, t.Name, t.PrimaryKey)
+	if err != nil {
+		a.fail(err)
+		return
+	}
+	a.push(v)
+}
 
-		case ":":
-			m.textInputActive = true
-			m.commandMode = true
-			m.textInput.SetValue("")
-			m.textInput.Prompt = ":"
-			m.textInput.Placeholder = "command"
-			m.textInput.Focus()
-			m.statusMessage = ""
-			return m, nil
-
-		case "esc":
-			if len(m.tableData) != len(m.originalData) {
-				m.tableData = m.originalData
-				m.selected = 0
-				m.offset = 0
-				m.textInput.SetValue("")
-				return m, nil
-			}
-			m.quitting = true
-			return m, tea.Quit
-		case "q", "ctrl+c":
-			m.quitting = true
-			return m, tea.Quit
-		case "up", "k":
-			if m.selected > 0 {
-				m.selected--
-			}
-			if m.selected < m.offset {
-				m.offset = m.selected
-			}
-		case "down", "j":
-			if m.selected < len(m.tableData)-1 {
-				m.selected++
-			}
-			tableDataArea := m.windowHeight - 4
-			if tableDataArea > 0 && m.selected >= m.offset+tableDataArea {
-				m.offset = m.selected - tableDataArea + 1
-			}
-		case "enter":
-			if m.selected >= 0 && m.selected < len(m.tableData) {
-				if m.tableData[m.selected].Type == "User defined view" {
-					viewName := m.tableData[m.selected].Name
-					sqlPath := filepath.Join(userViewsDir, viewName+".sql")
-					return m, func() tea.Msg {
-						return userViewMsg{
-							name:    viewName,
-							sqlPath: sqlPath,
-						}
-					}
-				}
-
-				selectedTable := m.tableData[m.selected].Name
-				pk := m.tableData[m.selected].PrimaryKey
-
-				return m, func() tea.Msg {
-					return showRecordsMsg{
-						tableName: selectedTable,
-						pk:        pk,
-					}
-				}
-			}
+func (l *tableList) command(a *app, line string) {
+	cmd := strings.TrimSpace(line)
+	switch cmd {
+	case "":
+	case "q", "quit":
+		a.quit = true
+	case "clear":
+		l.apply(a, "")
+		a.say(kit.OK, "filter cleared")
+	case "help":
+		a.push(&helpView{lines: listHelp})
+	case "reload":
+		l.reload(a)
+	case "rename":
+		if len(l.shown) == 0 {
+			a.say(kit.Warn, "no table selected")
+			return
 		}
-		// Clear status message on any other key press
-		m.statusMessage = ""
-		m.showHelp = false
-		return m, nil
-
+		old := l.shown[l.table.Cursor].Name
+		a.ask("rename "+old+" to: ", old, func(a *app, name string) {
+			name = strings.TrimSpace(name)
+			if name == "" || name == old {
+				a.say(kit.Warn, "same or empty name: nothing renamed")
+				return
+			}
+			err := a.pg.RenameTable(old, name)
+			if err != nil {
+				a.fail(err)
+				return
+			}
+			l.reload(a)
+			a.say(kit.OK, "%s renamed to %s", old, name)
+		})
 	default:
-		return m, nil
+		a.say(kit.Err, "unknown command %q (:help)", cmd)
 	}
 }
 
-func (m modelList) View() string {
-	if m.err != nil {
-		return m.err.Error()
-	}
-
-	width := m.windowWidth
-	if width == 0 {
-		width = 80
-	}
-
-	selWidth := 2
-	gaps := 4
-	remaining := width - selWidth - gaps
-	remaining = max(remaining, 0)
-	nameWidth := int(0.4 * float64(remaining))
-	typeWidth := int(0.15 * float64(remaining))
-	sizeWidth := int(0.15 * float64(remaining))
-	pkWidth := remaining - nameWidth - typeWidth - sizeWidth
-
-	title := fmt.Sprintf("dbv %s - Database Viewer [%s]", GitTag, DBTitle)
-
-	var sb strings.Builder
-	s := title
-	if len(s) > m.windowWidth {
-		if m.windowWidth > 3 {
-			s = s[:m.windowWidth-3] + "..."
-		}
-	}
-	sb.WriteString(titleStyle.Render(s))
-
-	header := fmt.Sprintf("\n  %s %s %s %s",
-		formatLeft("NAME", nameWidth),
-		formatLeft("TYPE", typeWidth),
-		formatRight("SIZE", sizeWidth),
-		formatLeft("PRIMARY KEY", pkWidth))
-	header = headerStyle.Render(header)
-	sb.WriteString("\033[1m" + header + "\033[0m\n")
-
-	tableDataArea := m.windowHeight - 4
-	visibleEnd := m.offset + tableDataArea
-	visibleEnd = min(visibleEnd, len(m.tableData))
-
-	for i := m.offset; i < visibleEnd; i++ {
-		row := m.tableData[i]
-		selIndicator := "  "
-		if i == m.selected {
-			selIndicator = "> "
-		}
-		line := fmt.Sprintf("%s %s %s %s",
-			formatLeft(row.Name, nameWidth),
-			formatLeft(row.Type, typeWidth),
-			formatRight(row.Size, sizeWidth),
-			formatLeft(row.PrimaryKey, pkWidth))
-		if i == m.selected {
-			line = selIndicator +
-				rowHighlight.Render(line)
-		} else {
-			line = selIndicator +
-				tableCellStyle.Render(line)
-		}
-		sb.WriteString(line)
-		sb.WriteString("\n")
-	}
-	for i := visibleEnd - m.offset; i < tableDataArea; i++ {
-		sb.WriteString("\n")
-	}
-
-	if m.showHelp {
-		sb.WriteString(statusBarStyle.Render("Commands (press any key to close)"))
-		sb.WriteString("\n")
-		sb.WriteString(statusBarStyle.Render("  Navigation"))
-		sb.WriteString("\n")
-		sb.WriteString(tableCellStyle.Render("  j / down    next row"))
-		sb.WriteString("\n")
-		sb.WriteString(tableCellStyle.Render("  k / up      previous row"))
-		sb.WriteString("\n")
-		sb.WriteString(tableCellStyle.Render("  enter       open table"))
-		sb.WriteString("\n")
-		sb.WriteString(statusBarStyle.Render("  Search"))
-		sb.WriteString("\n")
-		sb.WriteString(tableCellStyle.Render("  /           regex filter"))
-		sb.WriteString("\n")
-		sb.WriteString(statusBarStyle.Render("  Commands (:)"))
-		sb.WriteString("\n")
-		sb.WriteString(tableCellStyle.Render("  :q / :quit  quit"))
-		sb.WriteString("\n")
-		sb.WriteString(tableCellStyle.Render("  :clear      clear filter"))
-		sb.WriteString("\n")
-		sb.WriteString(tableCellStyle.Render("  :rename     rename selected table"))
-		sb.WriteString("\n")
-		sb.WriteString(tableCellStyle.Render("  :help       show this help"))
-		sb.WriteString("\n")
-	} else if m.statusMessage != "" {
-		sb.WriteString(errorStatusBarStyle.Render(m.statusMessage))
-		sb.WriteString("\n")
-	} else if m.err != nil {
-		statusText := fmt.Sprintf("Error: %v (Press any key to continue)", m.err)
-		sb.WriteString(errorStatusBarStyle.Render(statusText))
-		sb.WriteString("\n")
-	} else {
-		status := fmt.Sprintf("Row %d of %d", m.selected+1, len(m.tableData))
-		sb.WriteString(statusBarStyle.Render(status))
-		sb.WriteString("\n")
-	}
-
-	if m.textInputActive {
-		sb.WriteString(m.textInput.View())
-	}
-	return sb.String()
+var listHelp = []string{
+	"↑↓ j k        move",
+	"PgUp PgDn     a page",
+	"enter         open the table or view",
+	"/             filter by regular expression, live; esc clears",
+	":q :quit      quit",
+	":clear        clear the filter",
+	":reload       read the table list again",
+	":rename       rename the table under the cursor",
+	"esc           back (to the database menu)",
 }
+
+// vimKey reads h j k l as arrows, the way the old interface did.
+func vimKey(k screen.Key) screen.Key {
+	switch k {
+	case 'j':
+		return screen.KeyDown
+	case 'k':
+		return screen.KeyUp
+	case 'h':
+		return screen.KeyLeft
+	case 'l':
+		return screen.KeyRight
+	}
+	return k
+}
+
+// helpView is a page of text; any key closes it.
+type helpView struct {
+	lines []string
+}
+
+func (h *helpView) title() string     { return "Help" }
+func (h *helpView) hints() []kit.Hint { return []kit.Hint{{Key: "any key", What: "back"}} }
+
+func (h *helpView) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
+	for i, line := range h.lines {
+		if i >= rows-1 {
+			break
+		}
+		c.Print(top+1+i, left+1, kit.Cut(line, cols-2), kit.Text)
+	}
+}
+
+func (h *helpView) key(a *app, _ screen.Key) { a.pop() }

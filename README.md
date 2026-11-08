@@ -71,6 +71,34 @@ dbv
 - **Data Viewing & Editing**: Scroll through records, edit cells, and generate SQL/struct/JSON using quick commands.
 - **Commands**: Use `:where`, `:insert`, `:struct`, and `:json` to interact with data.
 
+### Command line (scripts and agents)
+
+`dbv COMMAND [flags] [args]` answers once and exits, without the
+interactive interface. All commands are read-only: SQL runs inside a
+`READ ONLY` transaction.
+
+```bash
+dbv dbs                                   # configured connections
+dbv tables -db 1                          # tables and views
+dbv columns -db 1 users
+dbv rows -db 1 -where 'active' -limit 20 users
+dbv query -db 1 -json 'SELECT id, name FROM users LIMIT 5'
+echo 'SELECT now()' | dbv query -db 1
+dbv struct -db 1 users                    # Go struct
+dbv insert -db 1 users                    # INSERT template
+```
+
+Text output is `;`-separated with a header line; `-json` gives
+`{"columns":[...],"rows":[[...]],"truncated":bool}`. `dbv -h` lists every
+flag. An agent skill lives in [skills/dbv/SKILL.md](skills/dbv/SKILL.md).
+
+### Interface
+
+The interactive screens use [filo-term-go](https://github.com/crgimenes/filo-term-go),
+the same look as `edt` and the BBS: a frame, a legend of the keys that work
+on each screen, and a note line at the bottom. `?` shows the help of the
+screen you are on.
+
 ### Keyboard Shortcuts
 
 - `h`, `j`, `k`, `l`: Navigation

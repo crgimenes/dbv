@@ -2,17 +2,18 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
-	textinput "github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/crgimenes/filo-term-go/kit"
+	"github.com/crgimenes/filo-term-go/screen"
 )
 
-// Parameter represents an SQL parameter for generating the form.
+// Parameter is a {{name:type:title:order}} token in a user view's SQL.
 type Parameter struct {
 	Name       string // required
 	Type       string // default "string"
@@ -21,45 +22,34 @@ type Parameter struct {
 	Occurrence int    // internal order if ZOrder are equal
 }
 
-// ExtractParameters extracts tokens from the SQL string and returns ordered parameters.
-func ExtractParameters(sqlStr string) []Parameter {
-	re := regexp.MustCompile(`\{\{(.*?)\}\}`)
-	matches := re.FindAllStringSubmatch(sqlStr, -1)
+var paramToken = regexp.MustCompile(`\{\{(.*?)\}\}`)
 
+func ExtractParameters(sqlStr string) []Parameter {
 	var params []Parameter
-	for i, match := range matches {
-		content := match[1]
-		fields := strings.Split(content, ":")
+	for i, match := range paramToken.FindAllStringSubmatch(sqlStr, -1) {
+		fields := strings.Split(match[1], ":")
 		for j, field := range fields {
 			fields[j] = strings.TrimSpace(field)
 		}
-		if len(fields) < 1 || fields[0] == "" {
+		if fields[0] == "" {
 			continue
 		}
-		param := Parameter{
-			Name:       fields[0],
-			Occurrence: i,
-
-			// Default type "string"
-			Type: "string"}
+		p := Parameter{Name: fields[0], Occurrence: i, Type: "string", Title: fields[0], ZOrder: i}
 		if len(fields) >= 2 && fields[1] != "" {
-			param.Type = fields[1]
+			p.Type = fields[1]
 		}
-		// Default title equals Name
-		param.Title = param.Name
 		if len(fields) >= 3 && fields[2] != "" {
-			param.Title = fields[2]
+			p.Title = fields[2]
 		}
-		// Default ZOrder equals the occurrence
-		param.ZOrder = i
 		if len(fields) >= 4 && fields[3] != "" {
-			if z, err := strconv.Atoi(fields[3]); err == nil {
-				param.ZOrder = z
+			z, err := strconv.Atoi(fields[3])
+			if err == nil {
+				p.ZOrder = z
 			}
 		}
-		params = append(params, param)
+		params = append(params, p)
 	}
-	sort.Slice(params, func(i, j int) bool {
+	sort.SliceStable(params, func(i, j int) bool {
 		if params[i].ZOrder != params[j].ZOrder {
 			return params[i].ZOrder < params[j].ZOrder
 		}
@@ -68,184 +58,88 @@ func ExtractParameters(sqlStr string) []Parameter {
 	return params
 }
 
-// formModel is the Bubble Tea model for the form.
-// Now includes window dimensions.
-type formModel struct {
-	screenTitle  string
-	baseSQL      string
-	parameters   []Parameter
-	inputs       []textinput.Model
-	activeIndex  int
-	submitted    bool
-	abandoned    bool
-	finalSQL     string
-	windowWidth  int
-	windowHeight int
+// fillParameters puts each value in place of every token of its parameter.
+func fillParameters(sql string, params []Parameter, values []string) string {
+	for i, p := range params {
+		re := regexp.MustCompile(`\{\{\s*` + regexp.QuoteMeta(p.Name) + `[^}]*\}\}`)
+		sql = re.ReplaceAllLiteralString(sql, values[i])
+	}
+	return sql
 }
 
-// newFormModel creates a form model and instantiates a text input for each parameter.
-// It aligns the prompts based on the longest title.
-func newFormModel(screenTitle, baseSQL string, params []Parameter) formModel {
-	// Calculate the maximum length of the field titles.
-	maxLen := 0
-	for _, param := range params {
-		l := len(param.Title)
-		if l > maxLen {
-			maxLen = l
+func openUserView(a *app, name string) {
+	b, err := os.ReadFile(filepath.Join(userViewsDir, name+".sql")) // #nosec G304 -- a file the user put in their views directory
+	if err != nil {
+		a.fail(err)
+		return
+	}
+	sql := string(b)
+	params := ExtractParameters(sql)
+	if len(params) == 0 {
+		showQuery(a, name, sql)
+		return
+	}
+	a.push(newParamForm(name, sql, params))
+}
+
+func showQuery(a *app, name, sql string) {
+	d, err := newQueryData(a, name, sql)
+	if err != nil {
+		a.fail(fmt.Errorf("%s: %w", name, err))
+		return
+	}
+	a.push(d)
+}
+
+// paramForm asks for a user view's parameters, all on screen at once.
+type paramForm struct {
+	name   string
+	sql    string
+	params []Parameter
+	form   *kit.Form
+	labelw int
+}
+
+func newParamForm(name, sql string, params []Parameter) *paramForm {
+	f := &paramForm{name: name, sql: sql, params: params}
+	fields := make([]kit.Field, len(params))
+	for i, p := range params {
+		fields[i] = kit.Field{Kind: kit.TextField, Label: p.Title, Width: 40, Max: 256}
+		f.labelw = max(f.labelw, screen.Width(p.Title))
+	}
+	f.form = kit.NewForm(fields, "Run", "Cancel")
+	return f
+}
+
+func (f *paramForm) title() string { return f.name + " · " + DBTitle }
+
+func (f *paramForm) hints() []kit.Hint {
+	return []kit.Hint{{Key: "↑↓ tab", What: "move"}, {Key: "enter", What: "next"}, {Key: "^W", What: "run"}, {Key: "esc", What: "back"}}
+}
+
+func (f *paramForm) draw(_ *app, c *screen.Canvas, top, left, _, cols int) {
+	for i := range f.form.Fields {
+		f.form.Fields[i].Width = max(10, min(60, cols-f.labelw-6))
+	}
+	end := f.form.Draw(c, top+1, left+1, f.labelw)
+	kit.Note(c, end+1, left+1, cols-2, kit.Err, f.form.Note)
+}
+
+func (f *paramForm) key(a *app, k screen.Key) {
+	switch f.form.Key(k) {
+	case kit.Cancel:
+		a.pop()
+	case "run":
+		values := make([]string, len(f.params))
+		for i := range f.params {
+			values[i] = f.form.Value(i)
 		}
-	}
-
-	inputs := make([]textinput.Model, len(params))
-	for i, param := range params {
-		ti := textinput.New()
-		ti.Placeholder = param.Title
-		// Align all prompts to the same column using padding.
-		ti.Prompt = fmt.Sprintf("%-*s: ", maxLen, param.Title)
-		ti.CharLimit = 64
-		if i == 0 {
-			ti.Focus()
-		} else {
-			ti.Blur()
+		d, err := newQueryData(a, f.name, fillParameters(f.sql, f.params, values))
+		if err != nil {
+			f.form.Note = err.Error() // the form stays, to fix what was typed
+			return
 		}
-		inputs[i] = ti
-	}
-	return formModel{
-		screenTitle: screenTitle,
-		baseSQL:     baseSQL,
-		parameters:  params,
-		inputs:      inputs,
-		activeIndex: 0,
-		// Default window size can be set later via WindowSizeMsg
-		windowWidth:  80,
-		windowHeight: 24,
+		a.pop()
+		a.push(d)
 	}
 }
-
-func (m formModel) Init() tea.Cmd {
-	return textinput.Blink
-}
-
-// Update handles Tea messages.
-func (m formModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.submitted || m.abandoned {
-		return m, nil // Removed tea.Quit to allow parent model to handle the state change
-	}
-
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.windowWidth = msg.Width
-		m.windowHeight = msg.Height
-	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
-			m.abandoned = true
-			return m, nil // Just mark as abandoned, let parent model handle navigation
-		case tea.KeyEnter, tea.KeyCtrlS:
-			// Advance focus or submit if on last input.
-			if m.activeIndex < len(m.inputs)-1 {
-				m.inputs[m.activeIndex].Blur()
-				m.activeIndex++
-				m.inputs[m.activeIndex].Focus()
-			} else {
-				m.submitted = true
-				m.finalSQL = m.computeFinalSQL()
-				return m, nil // Let parent model handle the submit action
-			}
-		case tea.KeyUp:
-			if m.activeIndex > 0 {
-				m.inputs[m.activeIndex].Blur()
-				m.activeIndex--
-				m.inputs[m.activeIndex].Focus()
-			}
-		case tea.KeyDown:
-			if m.activeIndex < len(m.inputs)-1 {
-				m.inputs[m.activeIndex].Blur()
-				m.activeIndex++
-				m.inputs[m.activeIndex].Focus()
-			}
-		}
-	}
-	var cmd tea.Cmd
-	m.inputs[m.activeIndex], cmd = m.inputs[m.activeIndex].Update(msg)
-	return m, cmd
-}
-
-// computeFinalSQL replaces the tokens in the SQL string with user-provided values.
-func (m formModel) computeFinalSQL() string {
-	final := m.baseSQL
-	for i, param := range m.parameters {
-		pattern := fmt.Sprintf(`\{\{\s*%s[^}]*\}\}`, regexp.QuoteMeta(param.Name))
-		re := regexp.MustCompile(pattern)
-		value := m.inputs[i].Value()
-		final = re.ReplaceAllString(final, value)
-	}
-	return final
-}
-
-// View renders the UI with the title at the top and the status bar and command line fixed at the bottom.
-func (m formModel) View() string {
-	if m.abandoned {
-		return abandonedStyle.Render("Form abandoned by user.\n")
-	}
-	if m.submitted {
-		s := submittedStyle.Render("Generated SQL with substitutions:\n\n")
-		s += m.finalSQL + "\n"
-		return s
-	}
-
-	// Render title and divider (at the top)
-	title := formTitleStyle.Render(m.screenTitle)
-	divider := lipgloss.NewStyle().Foreground(themeAccent).Render(strings.Repeat("─", m.windowWidth))
-
-	// Build form content lines
-	var formContent strings.Builder
-	for _, input := range m.inputs {
-		formContent.WriteString(input.View())
-		formContent.WriteString("\n")
-	}
-
-	// Status bar and command line (at the bottom)
-	status := statusBarStyle.Render("Ctrl+S: submit    Up/Down: navigate    Esc/Ctrl+C: cancel")
-	cmdLine := "" // placeholder, pode ser usado para comandos
-
-	// Split the existing content into lines
-	headerLines := []string{title, divider, ""}
-	formLines := strings.Split(formContent.String(), "\n")
-
-	// Calculate the reserved lines for status and command line (2 linhas)
-	reservedBottom := 2
-	// Total used lines so far
-	usedLines := len(headerLines) + len(formLines)
-	// Fill remaining lines until windowHeight - reservedBottom
-	var emptyLines []string
-	if m.windowHeight > usedLines+reservedBottom {
-		for i := 0; i < m.windowHeight-usedLines-reservedBottom; i++ {
-			emptyLines = append(emptyLines, "")
-		}
-	}
-
-	// Compose the final view
-	allLines := append(headerLines, formLines...)
-	allLines = append(allLines, emptyLines...)
-	allLines = append(allLines, status, cmdLine)
-	return strings.Join(allLines, "\n")
-}
-
-/*
-func main() {
-	baseSQL := `
-		SELECT * FROM customers
-		WHERE id = {{id:int:Customer ID:2}}
-		  AND status = {{status::Status:1}}
-		  AND created_at = {{created_at:timestamp::}}
-	`
-	params := ExtractParameters(baseSQL)
-	// Pass screen title as parameter, for example "Customer Form"
-	model := newFormModel("Customer Form", baseSQL, params)
-	p := tea.NewProgram(&model)
-	if _, err := p.Run(); err != nil {
-		fmt.Println("Error running program:", err)
-		os.Exit(1)
-	}
-}
-*/

@@ -4,447 +4,169 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/crgimenes/filo-term-go/kit"
+	"github.com/crgimenes/filo-term-go/screen"
 
 	"github.com/crgimenes/dbv/db"
 )
 
-type selectorMode int
+// selectorOutputFile is where neovim/rundbv.lua watches for what was picked.
+const selectorOutputFile = "/tmp/dbv_output.txt"
 
-const (
-	tableSelectMode selectorMode = iota
-	fieldSelectMode
-)
-
-type modelSelector struct {
-	currentMode       selectorMode
-	originalTables    []TableInfo
-	tables            []TableInfo
-	originalFields    []db.ColumnInfo
-	fields            []db.ColumnInfo
-	selectedTable     string
-	selectedRow       int
-	selectedFieldRow  int
-	windowWidth       int
-	windowHeight      int
-	offset            int
-	fieldOffset       int
-	textInput         textinput.Model
-	textInputActive   bool
-	commandMode       bool
-	commandInputValue string
-	statusMessage     string
-	err               error
-	outputFile        string
+// selector picks a table or a column name (or a struct, an INSERT) and
+// writes it to the output file, for an editor beside dbv to insert.
+type selector struct {
+	out    string
+	tables []TableInfo
+	shownT []TableInfo
+	fields []db.ColumnInfo
+	table  string // set while choosing a column of it
+	filter string
+	list   kit.Table
+	keepT  int // the table cursor while the columns are up
 }
 
-func initialModelSelector(outputFile string) modelSelector {
-	tables, err := db.Storage.ListTablesAndViews()
+func newSelector(out string) func(a *app) view {
+	return func(a *app) view {
+		s := &selector{out: out}
+		tables, err := getTableList(a.pg)
+		if err != nil {
+			a.fail(err)
+		}
+		for _, t := range tables {
+			if t.Type != userViewType {
+				s.tables = append(s.tables, t)
+			}
+		}
+		s.apply(a, "")
+		return s
+	}
+}
+
+func (s *selector) apply(a *app, filter string) {
+	s.filter = filter
+	s.shownT = s.tables
+	s.list.Cursor = 0
+	if filter == "" || s.table != "" {
+		return
+	}
+	re, err := regexp.Compile(filter)
 	if err != nil {
-		return modelSelector{
-			err:        err,
-			outputFile: outputFile,
-		}
+		a.say(kit.Warn, "filter: %v", err)
+		return
 	}
-
-	data := make([]TableInfo, len(tables))
-	for i, t := range tables {
-		pk := "-"
-		if t.PrimaryKey.Valid {
-			pk = t.PrimaryKey.String
+	s.shownT = nil
+	for _, t := range s.tables {
+		if re.MatchString(t.Name) {
+			s.shownT = append(s.shownT, t)
 		}
-		data[i] = TableInfo{
-			Name:       t.Name,
-			Type:       t.Type,
-			Size:       t.Size,
-			PrimaryKey: pk,
-		}
-	}
-
-	ti := textinput.New()
-	ti.Prompt = "/"
-	ti.Placeholder = "regex filter"
-	ti.CharLimit = 256
-	ti.Width = 20
-
-	return modelSelector{
-		currentMode:      tableSelectMode,
-		originalTables:   data,
-		tables:           data,
-		selectedRow:      0,
-		selectedFieldRow: 0,
-		offset:           0,
-		fieldOffset:      0,
-		outputFile:       outputFile,
-		textInput:        ti,
 	}
 }
 
-func (m modelSelector) Init() tea.Cmd {
-	return nil
+func (s *selector) title() string {
+	if s.table != "" {
+		return "Columns of " + s.table + " · " + DBTitle
+	}
+	return "Pick a table · " + DBTitle
 }
 
-func (m modelSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Tratar entrada de texto para filtragem
-	if m.textInputActive {
-		switch msg := msg.(type) {
-		case tea.KeyMsg:
-			switch msg.String() {
-			case "enter":
-				if m.commandMode {
-					cmd := m.textInput.Value()
-					m.commandInputValue = cmd
-					m.textInputActive = false
-					m.commandMode = false
-
-					if cmd == "q" || cmd == "Q" || cmd == "quit" {
-						return m, tea.Quit
-					}
-
-					if cmd != "" {
-						m.statusMessage = fmt.Sprintf("Unknown command: %q", cmd)
-					}
-
-					return m, nil
-				}
-
-				m.textInputActive = false
-				return m, nil
-
-			case "up", "down", "esc":
-				m.textInputActive = false
-				m.commandMode = false
-				// Se ESC, limpar o filtro
-				if msg.String() == "esc" {
-					m.textInput.SetValue("")
-					if m.currentMode == tableSelectMode {
-						m.tables = m.originalTables
-					} else {
-						m.fields = m.originalFields
-					}
-					m.selectedRow = 0
-					m.selectedFieldRow = 0
-					m.offset = 0
-					m.fieldOffset = 0
-				}
-				return m, nil
-			}
-		}
-
-		var cmd tea.Cmd
-		m.textInput, cmd = m.textInput.Update(msg)
-
-		if !m.commandMode {
-			filter := m.textInput.Value()
-			if m.currentMode == tableSelectMode {
-				if filter == "" {
-					m.tables = m.originalTables
-				} else {
-					if re, err := regexp.Compile(filter); err == nil {
-						var filtered []TableInfo
-						for _, row := range m.originalTables {
-							if re.MatchString(row.Name) {
-								filtered = append(filtered, row)
-							}
-						}
-						m.tables = filtered
-					}
-				}
-				m.selectedRow = 0
-				m.offset = 0
-			} else {
-				if filter == "" {
-					m.fields = m.originalFields
-				} else {
-					if re, err := regexp.Compile(filter); err == nil {
-						var filtered []db.ColumnInfo
-						for _, field := range m.originalFields {
-							if re.MatchString(field.ColumnName) {
-								filtered = append(filtered, field)
-							}
-						}
-						m.fields = filtered
-					}
-				}
-				m.selectedFieldRow = 0
-				m.fieldOffset = 0
-			}
-		}
-
-		return m, cmd
+func (s *selector) hints() []kit.Hint {
+	if s.table != "" {
+		return []kit.Hint{{Key: "↑↓", What: "move"}, {Key: "space", What: "pick"}, {Key: "esc tab", What: "tables"}, {Key: "q", What: "quit"}}
 	}
-
-	switch msg := msg.(type) {
-	case errMsg:
-		m.err = msg
-		return m, nil
-
-	case tea.WindowSizeMsg:
-		m.windowWidth = msg.Width
-		m.windowHeight = msg.Height
-		return m, nil
-
-	case tea.KeyMsg:
-		if m.err != nil {
-			m.err = nil
-			return m, nil
-		}
-
-		switch msg.String() {
-		case "/":
-			m.textInputActive = true
-			m.commandMode = false
-			m.textInput.Prompt = "/"
-			m.textInput.Placeholder = "regex filter"
-			m.textInput.Focus()
-			m.statusMessage = ""
-			return m, nil
-
-		case ":":
-			m.textInputActive = true
-			m.commandMode = true
-			m.textInput.SetValue("")
-			m.textInput.Prompt = ":"
-			m.textInput.Placeholder = "command"
-			m.textInput.Focus()
-			m.statusMessage = ""
-			return m, nil
-
-		case "tab", "enter":
-			if m.currentMode == tableSelectMode && len(m.tables) > 0 {
-				tableName := m.tables[m.selectedRow].Name
-				columns, err := db.Storage.ListColumns(tableName)
-				if err != nil {
-					m.err = err
-					return m, nil
-				}
-				m.originalFields = columns
-				m.fields = columns
-				m.selectedFieldRow = 0
-				m.fieldOffset = 0
-				m.selectedTable = tableName
-				m.currentMode = fieldSelectMode
-			} else if m.currentMode == fieldSelectMode {
-				m.currentMode = tableSelectMode
-			}
-			return m, nil
-
-		case "up", "k":
-			if m.currentMode == tableSelectMode {
-				if m.selectedRow > 0 {
-					m.selectedRow--
-				}
-				if m.selectedRow < m.offset {
-					m.offset = m.selectedRow
-				}
-			} else {
-				if m.selectedFieldRow > 0 {
-					m.selectedFieldRow--
-				}
-				if m.selectedFieldRow < m.fieldOffset {
-					m.fieldOffset = m.selectedFieldRow
-				}
-			}
-
-		case "down", "j":
-			if m.currentMode == tableSelectMode {
-				if m.selectedRow < len(m.tables)-1 {
-					m.selectedRow++
-				}
-				tableDataArea := m.windowHeight - 2
-				if tableDataArea > 0 && m.selectedRow >= m.offset+tableDataArea {
-					m.offset = m.selectedRow - tableDataArea + 1
-				}
-			} else {
-				if m.selectedFieldRow < len(m.fields)-1 {
-					m.selectedFieldRow++
-				}
-				fieldDataArea := m.windowHeight - 2
-				if fieldDataArea > 0 && m.selectedFieldRow >= m.fieldOffset+fieldDataArea {
-					m.fieldOffset = m.selectedFieldRow - fieldDataArea + 1
-				}
-			}
-
-		case "S":
-			if m.currentMode == tableSelectMode && len(m.tables) > 0 {
-				tableName := m.tables[m.selectedRow].Name
-				structDefinition, err := db.Storage.CreateGoStructDefinition(tableName)
-				if err != nil {
-					m.err = err
-					return m, nil
-				}
-
-				err = os.WriteFile(m.outputFile, []byte(structDefinition), 0644)
-				if err != nil {
-					m.err = err
-					return m, nil
-				}
-
-				m.statusMessage = fmt.Sprintf("Struct %s written to %s", tableName, m.outputFile)
-			}
-			return m, nil
-
-		case "I":
-			if m.currentMode == tableSelectMode && len(m.tables) > 0 {
-				tableName := m.tables[m.selectedRow].Name
-				insertSQL, err := db.Storage.CreateInsertStatement(tableName)
-				if err != nil {
-					m.err = err
-					return m, nil
-				}
-
-				err = os.WriteFile(m.outputFile, []byte(insertSQL), 0644)
-				if err != nil {
-					m.err = err
-					return m, nil
-				}
-
-				m.statusMessage = fmt.Sprintf("INSERT SQL for %s written to %s", tableName, m.outputFile)
-			}
-			return m, nil
-
-		case " ", "s":
-			var text string
-			if m.currentMode == tableSelectMode && len(m.tables) > 0 {
-				text = m.tables[m.selectedRow].Name
-			} else if m.currentMode == fieldSelectMode && len(m.fields) > 0 {
-				text = m.fields[m.selectedFieldRow].ColumnName
-			} else {
-				return m, nil
-			}
-
-			err := os.WriteFile(m.outputFile, []byte(text), 0644)
-			if err != nil {
-				m.err = err
-				return m, nil
-			}
-			m.statusMessage = fmt.Sprintf("Selecionado: %s", text)
-			return m, nil
-
-		case "backspace", "esc", "shift+tab":
-			if m.currentMode == fieldSelectMode {
-				m.currentMode = tableSelectMode
-			} else {
-				return m, tea.Quit
-			}
-
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
-		m.statusMessage = ""
+	return []kit.Hint{
+		{Key: "↑↓", What: "move"}, {Key: "space", What: "pick"}, {Key: "tab", What: "columns"},
+		{Key: "S", What: "struct"}, {Key: "I", What: "insert"}, {Key: "/", What: "filter"}, {Key: "q", What: "quit"},
 	}
-	return m, nil
 }
 
-func (m modelSelector) View() string {
-	if m.err != nil {
-		return errorStatusBarStyle.Render(fmt.Sprintf(
-			"Error: %s (press any key to continue)",
-			m.err))
+func (s *selector) count() int {
+	if s.table != "" {
+		return len(s.fields)
 	}
+	return len(s.shownT)
+}
 
-	width := m.windowWidth
-	if width == 0 {
-		width = 80
+func (s *selector) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
+	if s.table != "" {
+		cs := kit.FillCols([]kit.Col{{Header: "COLUMN", Width: max(12, cols/2)}, {Header: "TYPE"}}, cols)
+		s.list.Draw(c, top, left, cs, len(s.fields), func(i int) []string {
+			return []string{s.fields[i].ColumnName, s.fields[i].DataType}
+		}, rows-2)
+		return
 	}
+	cs := kit.FillCols([]kit.Col{{Header: "NAME", Width: max(12, cols/2)}, {Header: "TYPE", Width: 10}, {Header: "PRIMARY KEY"}}, cols)
+	s.list.Draw(c, top, left, cs, len(s.shownT), func(i int) []string {
+		t := s.shownT[i]
+		return []string{t.Name, t.Type, t.PrimaryKey}
+	}, rows-2)
+}
 
-	height := m.windowHeight
-	if height == 0 {
-		height = 24
+func (s *selector) write(a *app, what, text string) {
+	err := os.WriteFile(s.out, []byte(text), 0o600)
+	if err != nil {
+		a.fail(err)
+		return
 	}
+	a.say(kit.OK, "%s written to %s", what, s.out)
+}
 
-	var sb strings.Builder
-
-	if m.currentMode == tableSelectMode {
-		tableDataArea := height - 2
-		visibleEnd := m.offset + tableDataArea
-		visibleEnd = min(visibleEnd, len(m.tables))
-
-		selWidth := 2
-		nameWidth := width - selWidth - 1
-
-		for i := m.offset; i < visibleEnd; i++ {
-			table := m.tables[i]
-			selIndicator := "  "
-			if i == m.selectedRow {
-				selIndicator = "> "
-				fmt.Fprintf(&sb, "%s%s\n", selIndicator, rowHighlight.Render(
-					fitText(table.Name, nameWidth)))
-			} else {
-				fmt.Fprintf(&sb, "%s%s\n", selIndicator, tableCellStyle.Render(
-					fitText(table.Name, nameWidth)))
-			}
-		}
-
-		for i := visibleEnd - m.offset; i < tableDataArea; i++ {
-			sb.WriteString("\n")
-		}
-
-		if m.statusMessage != "" {
-			sb.WriteString(statusBarStyle.Render(m.statusMessage))
-		} else {
-			sb.WriteString(statusBarStyle.Render(fmt.Sprintf(
-				"Table %d : %d | space: select | Esc: exit | /: search",
-				m.selectedRow+1,
-				len(m.tables))))
-		}
-	} else {
-		fieldDataArea := height - 2
-		visibleEnd := m.fieldOffset + fieldDataArea
-		visibleEnd = min(visibleEnd, len(m.fields))
-
-		selWidth := 2
-		colGap := 2
-		nameWidth := (width - selWidth - colGap) * 2 / 3
-		typeWidth := width - selWidth - colGap - nameWidth
-
-		maxNameWidth := 0
-		for _, field := range m.fields {
-			if len(field.ColumnName) > maxNameWidth {
-				maxNameWidth = len(field.ColumnName)
-			}
-		}
-		//maxNameWidth = min(maxNameWidth, nameWidth)
-
-		for i := m.fieldOffset; i < visibleEnd; i++ {
-			field := m.fields[i]
-			selIndicator := "  "
-
-			if i == m.selectedFieldRow {
-				selIndicator = "> "
-				fmt.Fprintf(&sb, "%s%s  %s\n",
-					selIndicator,
-					rowHighlight.Render(formatLeft(field.ColumnName, nameWidth)),
-					rowHighlight.Render(formatLeft(field.DataType, typeWidth)))
-				continue
-			}
-			fmt.Fprintf(&sb, "%s%s  %s\n",
-				selIndicator,
-				tableCellStyle.Render(formatLeft(field.ColumnName, nameWidth)),
-				tableCellStyle.Render(formatLeft(field.DataType, typeWidth)))
-		}
-
-		for i := visibleEnd - m.fieldOffset; i < fieldDataArea; i++ {
-			sb.WriteString("\n")
-		}
-
-		if m.statusMessage != "" {
-			sb.WriteString(statusBarStyle.Render(m.statusMessage))
-		} else {
-			sb.WriteString(statusBarStyle.Render(fmt.Sprintf(
-				"Field %d : %d | space: select | Esc: exit | /: search",
-				m.selectedFieldRow+1, len(m.fields))))
-		}
+func (s *selector) current() string {
+	if s.count() == 0 {
+		return ""
 	}
-
-	if m.textInputActive {
-		sb.WriteString("\n")
-		sb.WriteString(m.textInput.View())
+	if s.table != "" {
+		return s.fields[s.list.Cursor].ColumnName
 	}
+	return s.shownT[s.list.Cursor].Name
+}
 
-	return sb.String()
+func (s *selector) key(a *app, k screen.Key) {
+	_, h := a.t.Size()
+	if s.list.Move(vimKey(k), s.count(), h-8) {
+		return
+	}
+	name := s.current()
+	switch {
+	case k == 'q' || k == screen.Ctrl('c'):
+		a.quit = true
+	case s.table != "" && (k == screen.KeyEsc || k == screen.KeyTab || k == screen.KeyBackTab || k == screen.KeyBackspace):
+		s.table, s.list.Cursor = "", s.keepT
+	case k == screen.KeyEsc && s.filter != "":
+		s.apply(a, "")
+	case k == screen.KeyEsc:
+		a.quit = true
+	case name == "":
+	case k == ' ' || k == 's':
+		s.write(a, name, name)
+	case s.table != "":
+	case k == screen.KeyTab || k == screen.KeyEnter:
+		s.columns(a, name)
+	case k == 'S':
+		s.generate(a, name, "struct", a.pg.CreateGoStructDefinition)
+	case k == 'I':
+		s.generate(a, name, "INSERT", a.pg.CreateInsertStatement)
+	case k == '/':
+		a.ask("/", s.filter, func(a *app, line string) { s.apply(a, line) })
+		a.onEdit = func(a *app, line string) { s.apply(a, line) }
+	}
+}
+
+func (s *selector) columns(a *app, table string) {
+	fields, err := a.pg.ListColumns(table)
+	if err != nil {
+		a.fail(err)
+		return
+	}
+	s.fields, s.table, s.keepT, s.list.Cursor = fields, table, s.list.Cursor, 0
+}
+
+func (s *selector) generate(a *app, table, what string, gen func(string) (string, error)) {
+	text, err := gen(table)
+	if err != nil {
+		a.fail(err)
+		return
+	}
+	s.write(a, fmt.Sprintf("%s of %s", what, table), text)
 }

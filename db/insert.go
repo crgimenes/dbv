@@ -22,10 +22,11 @@ func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
             column_default
         FROM information_schema.columns
         WHERE table_name = $1
+          AND table_schema = ANY($2::text[])
         ORDER BY column_name;  -- initially ordered alphabetically
     `
 	var cols []ColumnInfoEx
-	if err := pg.DB.Select(&cols, sqlStatement, tableName); err != nil {
+	if err := pg.DB.Select(&cols, sqlStatement, tableName, pg.schemas); err != nil {
 		return "", fmt.Errorf("error fetching columns: %w", err)
 	}
 	if len(cols) == 0 {
