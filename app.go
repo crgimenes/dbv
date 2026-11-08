@@ -53,6 +53,7 @@ type app struct {
 	sqlText string // the last :sql that ran, to edit again
 
 	history   map[string][]string
+	histFile  string // "" keeps the history in memory only (tests)
 	histAt    int    // len(history[prompt]) while typing a new line
 	histDraft string // the line being typed, while ↑ shows older ones
 }
@@ -153,19 +154,32 @@ func (a *app) histKey() string {
 	return fmt.Sprintf("%T%s", a.top(), a.prompt)
 }
 
-func (a *app) remember(line string) {
+func (a *app) remember(line string) { a.rememberAt(a.histKey(), line) }
+
+// rememberAt keeps line for this session and, with a history file, the
+// next ones; a file that cannot be written costs the next run its lines,
+// not this one its work.
+func (a *app) rememberAt(key, line string) {
 	if a.history == nil {
 		a.history = map[string][]string{}
 	}
-	h := a.history[a.histKey()]
-	if line == "" || (len(h) > 0 && h[len(h)-1] == line) {
+	addLine(a.history, key, line)
+	if a.histFile == "" || line == "" {
 		return
 	}
-	h = append(h, line)
-	if len(h) > historyMax {
-		h = h[len(h)-historyMax:]
+	err := saveLine(a.histFile, key, line)
+	if err != nil {
+		debugEvent("history", debugNow(), "err", err)
 	}
-	a.history[a.histKey()] = h
+}
+
+// last is the newest line kept at key, "" when there is none.
+func (a *app) last(key string) string {
+	h := a.history[key]
+	if len(h) == 0 {
+		return ""
+	}
+	return h[len(h)-1]
 }
 
 // recall walks the prompt's history the way a shell does: nothing to walk
@@ -443,6 +457,13 @@ func runTUI(configs []db.DBConfig, first func(a *app) view) error {
 		return err
 	}
 	a := &app{t: t, c: screen.New(t.Size())}
+	a.histFile, err = historyFile()
+	if err == nil {
+		a.history, err = readHistory(a.histFile)
+	}
+	if err != nil {
+		debugEvent("history", debugNow(), "err", err) // the lines typed last time are lost, nothing else
+	}
 	defer func() {
 		_ = t.Close()
 		if a.pg != nil {

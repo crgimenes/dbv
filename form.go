@@ -79,7 +79,7 @@ func openUserView(a *app, name string) {
 		showQuery(a, name, sql)
 		return
 	}
-	a.push(newParamForm(name, sql, params))
+	a.push(newParamForm(a, name, sql, params))
 }
 
 func showQuery(a *app, name, sql string) {
@@ -100,11 +100,15 @@ type paramForm struct {
 	labelw int
 }
 
-func newParamForm(name, sql string, params []Parameter) *paramForm {
+// formKey is where a view's parameter keeps the values it was given.
+func formKey(view, param string) string { return "form " + view + " " + param }
+
+// newParamForm opens with the values the view ran with last time.
+func newParamForm(a *app, name, sql string, params []Parameter) *paramForm {
 	f := &paramForm{name: name, sql: sql, params: params}
 	fields := make([]kit.Field, len(params))
 	for i, p := range params {
-		fields[i] = kit.Field{Kind: kit.TextField, Label: p.Title, Width: 40, Max: 256}
+		fields[i] = kit.Field{Kind: kit.TextField, Label: p.Title, Width: 40, Max: 256, Value: a.last(formKey(name, p.Name))}
 		f.labelw = max(f.labelw, screen.Width(p.Title))
 	}
 	f.form = kit.NewForm(fields, "Run", "Cancel")
@@ -137,6 +141,9 @@ func (f *paramForm) key(a *app, k screen.Key) {
 		if err != nil {
 			f.form.Note = err.Error() // the form stays, to fix what was typed
 			return
+		}
+		for i, p := range f.params {
+			a.rememberAt(formKey(f.name, p.Name), values[i])
 		}
 		a.pop()
 		a.push(d)
