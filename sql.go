@@ -26,6 +26,9 @@ func runSQL(a *app) {
 		text = sqlTemplate
 	}
 	d, ok := a.top().(*tableData)
+	if ok && d.sql != "" {
+		text = sqlTemplate + strings.TrimSpace(d.sql) + "\n" // the view as it ran, parameters filled
+	}
 	if ok && !d.query {
 		err := a.busy("reading "+d.name, func(ctx context.Context) error {
 			q, err := d.selectSQL(ctx, a.pg, d.selectList())

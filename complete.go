@@ -38,17 +38,24 @@ func sqlName(name string) string {
 	return db.QuoteName(name)
 }
 
-// complete finishes the word at the end of line from names, then words
-// (keywords, written in the case the user types them). One match is taken
-// whole, with a space after; several are extended to what they share and
+// completion is what Tab may put in a line: names as they are written
+// there (quoted or not, the caller's call), then words (keywords, written
+// in the case the user types them); sep follows a whole match.
+type completion struct {
+	names, words []string
+	sep          string
+}
+
+// complete finishes the word at the end of line from c. One match is
+// taken whole, with c.sep after; several are extended to what they share and
 // returned with head, the line before the word, for the menu to walk.
 // yagni: the word is the line's last, not the one under the caret, since
 // kit.Input does not say where the caret is.
-func complete(line string, names, words []string) (string, string, []string) {
+func complete(line string, c completion) (string, string, []string) {
 	start := len(line)
 	for start > 0 {
 		r := rune(line[start-1])
-		if r != '_' && r != '"' && !unicode.IsLetter(r) && !unicode.IsDigit(r) && r < 0x80 {
+		if r != '_' && r != '"' && r != '.' && !unicode.IsLetter(r) && !unicode.IsDigit(r) && r < 0x80 {
 			break
 		}
 		start--
@@ -57,12 +64,12 @@ func complete(line string, names, words []string) (string, string, []string) {
 	lower := strings.ToLower(word) == word
 
 	var found []string
-	for _, n := range names {
-		if strings.HasPrefix(strings.ToLower(n), strings.ToLower(word)) {
-			found = append(found, sqlName(n))
+	for _, n := range c.names {
+		if strings.HasPrefix(strings.ToLower(strings.TrimPrefix(n, `"`)), strings.ToLower(word)) {
+			found = append(found, n)
 		}
 	}
-	for _, w := range words {
+	for _, w := range c.words {
 		if !strings.HasPrefix(strings.ToUpper(w), strings.ToUpper(word)) {
 			continue
 		}
@@ -75,7 +82,7 @@ func complete(line string, names, words []string) (string, string, []string) {
 	case 0:
 		return line, head, nil
 	case 1:
-		return head + found[0] + " ", head, nil
+		return head + found[0] + c.sep, head, nil
 	}
 	common := found[0]
 	for _, f := range found[1:] {
@@ -93,9 +100,9 @@ func complete(line string, names, words []string) (string, string, []string) {
 // each in the line after head; at -1 is none chosen yet, typed is the line
 // ESC goes back to.
 type tabMenu struct {
-	head, typed string
-	items       []string
-	at          int
+	head, typed, sep string
+	items            []string
+	at               int
 }
 
 func (m *tabMenu) move(d int) string {
@@ -127,4 +134,12 @@ func (m *tabMenu) draw(c *screen.Canvas, row, col, width int) {
 		}
 		at += c.Print(row, at, kit.Cut(" "+m.items[i]+" ", col+width-at), pen)
 	}
+}
+
+// commandCompletion offers a screen's commands for the line's first word.
+func commandCompletion(line string, commands []string) completion {
+	if strings.ContainsRune(strings.TrimLeft(line, " "), ' ') {
+		return completion{}
+	}
+	return completion{words: commands, sep: " "}
 }

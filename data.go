@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -31,7 +32,9 @@ type tableData struct {
 	name      string
 	pk        string // "-" or empty: read only
 	readOnly  bool
-	query     bool // rows came from a user view's SQL: all loaded, its own order
+	query     bool   // rows came from a user view's SQL: all loaded, its own order
+	sql       string // a user view's SQL as it ran, for :sql to start from
+	base      *queryRows
 	columns   []db.ColumnInfo
 	header    []string
 	colBefore int // the cursor column when the command line opened
@@ -75,7 +78,7 @@ func newQueryData(a *app, name, sql string) (*tableData, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &tableData{name: name, pk: "-", readOnly: true, query: true, columns: res.Columns}
+	d := &tableData{name: name, pk: "-", readOnly: true, query: true, sql: sql, columns: res.Columns}
 	d.setHeader()
 	for _, r := range res.Rows {
 		d.add(r)
@@ -221,9 +224,7 @@ func (d *tableData) hints() []kit.Hint {
 		h = append(h, kit.Hint{Key: "e", What: "edit"})
 	}
 	h = append(h, kit.Hint{Key: "p", What: "view"})
-	if !d.query {
-		h = append(h, kit.Hint{Key: "o O", What: "order"})
-	}
+	h = append(h, kit.Hint{Key: "o O", What: "order"})
 	return append(h, kit.Hint{Key: ":", What: "command"}, kit.Hint{Key: "?", What: "help"}, kit.Hint{Key: "esc", What: "back"})
 }
 
@@ -489,6 +490,80 @@ func (d *tableData) more(a *app, page int) {
 	}
 }
 
+// queryRows are a query's rows as they came, for sortHere to start from.
+type queryRows struct {
+	rows  [][]string
+	nulls [][]bool
+	raw   [][]any
+}
+
+// sortHere orders a query's rows in memory: they are all here, and running
+// the query again could run its writes again. NULLs sort as PostgreSQL's
+// do, last going up and first going down; no order is the order they came.
+func (d *tableData) sortHere() {
+	if d.base == nil {
+		d.base = &queryRows{d.rows, d.nulls, d.raw}
+	}
+	b := d.base
+	type key struct {
+		col  int
+		desc bool
+	}
+	var keys []key
+	for _, o := range d.order {
+		i := slices.Index(d.header, o.col)
+		if i >= 0 {
+			keys = append(keys, key{i, o.dir == "DESC"})
+		}
+	}
+	perm := make([]int, len(b.rows))
+	for i := range perm {
+		perm[i] = i
+	}
+	slices.SortStableFunc(perm, func(x, y int) int {
+		for _, k := range keys {
+			c := compareCells(b, x, y, k.col)
+			if k.desc {
+				c = -c
+			}
+			if c != 0 {
+				return c
+			}
+		}
+		return 0
+	})
+	d.rows, d.nulls = make([][]string, len(perm)), make([][]bool, len(perm))
+	if b.raw != nil {
+		d.raw = make([][]any, len(perm))
+	}
+	for i, p := range perm {
+		d.rows[i], d.nulls[i] = b.rows[p], b.nulls[p]
+		if b.raw != nil {
+			d.raw[i] = b.raw[p]
+		}
+	}
+}
+
+// compareCells compares numbers as numbers, the rest as text.
+func compareCells(b *queryRows, x, y, col int) int {
+	nx, ny := b.nulls[x][col], b.nulls[y][col]
+	switch {
+	case nx && ny:
+		return 0
+	case nx:
+		return 1
+	case ny:
+		return -1
+	}
+	sx, sy := b.rows[x][col], b.rows[y][col]
+	fx, ex := strconv.ParseFloat(sx, 64)
+	fy, ey := strconv.ParseFloat(sy, 64)
+	if ex == nil && ey == nil {
+		return cmp.Compare(fx, fy)
+	}
+	return strings.Compare(sx, sy)
+}
+
 // toggleOrder is o and O on col: a new key goes last, the same key again
 // undoes it and the other direction flips it, the other keys untouched.
 func toggleOrder(order []orderBy, col, dir string) []orderBy {
@@ -505,13 +580,13 @@ func toggleOrder(order []orderBy, col, dir string) []orderBy {
 }
 
 func (d *tableData) orderBy(a *app, dir string) {
-	if d.query {
-		a.say(kit.Warn, "a view's query has its own order")
-		return
-	}
 	col := d.header[d.col]
 	before := slices.Clone(d.order)
 	d.order = toggleOrder(before, col, dir)
+	if d.query {
+		d.sortHere()
+		return
+	}
 	err := d.reset(a)
 	if err != nil {
 		d.order = before // the rows on screen are still in the old order
@@ -525,8 +600,11 @@ func (d *tableData) command(a *app, line string) {
 	case cmd == "":
 	case cmd == "q":
 		a.pop()
-	case (cmd == "where" || strings.HasPrefix(cmd, "where ") || cmd == "order") && d.query:
-		a.say(kit.Warn, "a view's query has its own where and order")
+	case cmd == "order" && d.query:
+		d.order = nil
+		d.sortHere()
+	case (cmd == "where" || strings.HasPrefix(cmd, "where ")) && d.query:
+		a.say(kit.Warn, "a view's query has its own where")
 	case cmd == "where" || strings.HasPrefix(cmd, "where "):
 		before := d.where
 		d.where = strings.TrimSpace(strings.TrimPrefix(cmd, "where"))
@@ -560,15 +638,16 @@ var dataCommands = []string{"where", "order", "show", "insert", "struct", "json"
 
 // completions are what Tab offers at the grid's ":": a command first, then
 // in a :where the columns and the words between them.
-func (d *tableData) completions(line string) ([]string, []string) {
+func (d *tableData) completions(line string) completion {
 	line = strings.TrimLeft(line, " ")
 	if strings.HasPrefix(line, "where ") && !d.query {
-		return d.header, whereWords
+		names := make([]string, len(d.header))
+		for i, h := range d.header {
+			names[i] = sqlName(h)
+		}
+		return completion{names: names, words: whereWords, sep: " "}
 	}
-	if strings.ContainsRune(line, ' ') {
-		return nil, nil
-	}
-	return nil, dataCommands
+	return commandCompletion(line, dataCommands)
 }
 
 // pick puts the cursor on the column the Tab menu chose, so its data

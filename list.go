@@ -151,8 +151,10 @@ func (l *tableList) key(a *app, k screen.Key) {
 	case '/':
 		a.ask("/", l.filter, func(a *app, line string) { l.apply(a, line) })
 		a.onEdit = func(a *app, line string) { l.apply(a, line) }
+		a.onTab, a.onPick = tableNames(l.all), func(name string) { l.table.Cursor = indexOfTable(l.shown, name, l.table.Cursor) }
 	case ':':
 		a.ask(":", "", l.command)
+		a.onTab = func(line string) completion { return commandCompletion(line, listCommands) }
 	case '?':
 		a.push(&helpView{lines: listHelp})
 	case 'y':
@@ -179,6 +181,28 @@ func (l *tableList) open(a *app) {
 		return
 	}
 	a.push(v)
+}
+
+var listCommands = []string{"clear", "reload", "rename", "sql", "help", "quit"}
+
+// tableNames is Tab in a / filter: the names as they are, nothing after,
+// for the filter to narrow to as the menu walks them.
+func tableNames(tables []TableInfo) func(string) completion {
+	names := make([]string, len(tables))
+	for i, t := range tables {
+		names[i] = t.Name
+	}
+	return func(string) completion { return completion{names: names} }
+}
+
+// indexOfTable is name's row in shown, at when it is not there.
+func indexOfTable(shown []TableInfo, name string, at int) int {
+	for i, t := range shown {
+		if t.Name == name {
+			return i
+		}
+	}
+	return at
 }
 
 func (l *tableList) command(a *app, line string) {
@@ -225,7 +249,7 @@ var listHelp = []string{
 	"↑↓ j k        move",
 	"PgUp PgDn     a page",
 	"enter         open the table or view",
-	"/             filter by regular expression, live; esc clears",
+	"/             filter by regular expression, live; tab completes a name",
 	"y             copy the table name to the clipboard",
 	":q :quit      quit",
 	":clear        clear the filter",

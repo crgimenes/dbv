@@ -8,7 +8,7 @@ import (
 )
 
 func TestComplete(t *testing.T) {
-	names := []string{"id", "created_at", "customer_id", "Status", "order"}
+	d := &tableData{header: []string{"id", "created_at", "customer_id", "Status", "order"}}
 	for _, c := range []struct {
 		line, want string
 		shown      int
@@ -26,7 +26,7 @@ func TestComplete(t *testing.T) {
 		{"where id i", "where id i", 3}, // id, in, ilike, is ... share only "i"
 		{"where xyz", "where xyz", 0},
 	} {
-		got, _, shown := complete(c.line, names, whereWords)
+		got, _, shown := complete(c.line, d.completions(c.line))
 		if got != c.want || (c.shown > 0 && len(shown) < c.shown) || (c.shown == 0 && shown != nil) {
 			t.Errorf("%q: got %q %v, want %q", c.line, got, shown, c.want)
 		}
@@ -35,17 +35,17 @@ func TestComplete(t *testing.T) {
 
 func TestCompletions(t *testing.T) {
 	d := &tableData{header: []string{"id"}}
-	names, words := d.completions("where i")
-	if !slices.Equal(names, []string{"id"}) || words == nil {
-		t.Fatalf("%v %v", names, words)
+	c := d.completions("where i")
+	if !slices.Equal(c.names, []string{"id"}) || c.words == nil {
+		t.Fatalf("%+v", c)
 	}
-	got, _, _ := complete("wh", nil, dataCommands)
+	got, _, _ := complete("wh", d.completions("wh"))
 	if got != "where " {
 		t.Fatalf("%q", got)
 	}
-	names, _ = d.completions("export x")
-	if names != nil {
-		t.Fatalf("%v", names)
+	c = d.completions("export x")
+	if c.names != nil || c.words != nil {
+		t.Fatalf("%+v", c)
 	}
 }
 

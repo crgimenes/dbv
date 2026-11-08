@@ -150,6 +150,7 @@ func (s *selector) key(a *app, k screen.Key) {
 	case k == '/':
 		a.ask("/", s.filter, func(a *app, line string) { s.apply(a, line) })
 		a.onEdit = func(a *app, line string) { s.apply(a, line) }
+		a.onTab, a.onPick = tableNames(s.tables), func(name string) { s.list.Cursor = indexOfTable(s.shownT, name, s.list.Cursor) }
 	}
 }
 

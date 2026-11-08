@@ -95,7 +95,7 @@ dbv
 
 - **Table Listing & Filtering**: Easily navigate and filter available tables.
 - **Data Viewing & Editing**: Scroll through records, edit cells, and generate SQL/struct/JSON using quick commands.
-- **Commands**: `:where COND`, `:order`, `:show` (bring hidden columns back), `:insert`, `:struct`, `:json`, `:update` and `:export FILE` on a table; `:clear`, `:reload`, `:rename` and `:quit` on the table list; `:sql` on both. `↑↓` on the command line bring back what was typed on that screen. On a table's command line, `Tab` completes the command and, in a `:where`, column names and SQL words (`and`, `like`, `between`, `is null`...); when several match, a bar opens above the line: `Tab`/`→` and `Shift-Tab`/`←` walk it, `Enter` takes the word, `Esc` goes back to what was typed. The grid's cursor follows the column chosen, so its data shows while the condition is written. `Tab` on an empty line lists every command.
+- **Commands**: `:where COND`, `:order`, `:show` (bring hidden columns back), `:insert`, `:struct`, `:json`, `:update` and `:export FILE` on a table; `:clear`, `:reload`, `:rename` and `:quit` on the table list; `:sql` on both. `↑↓` on the command line bring back what was typed on that screen. On a table's command line, `Tab` completes the command and, in a `:where`, column names and SQL words (`and`, `like`, `between`, `is null`...); when several match, a bar opens above the line: `Tab`/`→` and `Shift-Tab`/`←` walk it, `Enter` takes the word, `Esc` goes back to what was typed. The grid's cursor follows the column chosen, so its data shows while the condition is written. `Tab` on an empty line lists every command; the table list's `:` completes its commands too, and `Tab` in a `/` filter (table list, `-s` picker) completes table names, the list following the bar.
 - **Long queries**: a spinner shows after a tenth of a second, and `Esc` cancels the query on the server.
 - **Selector mode**: `dbv -s` picks a table or column name (Space), a Go struct (`S`) or an INSERT (`I`) and writes it to `/tmp/dbv_output.txt`, for an editor running beside dbv to insert.
 
@@ -168,6 +168,7 @@ Table data:
 - `p`: view the cell in `$PAGER`
 - `y`, `Y`: copy the cell, or the row as tab-separated text, to the clipboard (through the terminal, OSC 52; works over ssh, and in tmux with `set -g set-clipboard on`)
 - `o`, `O`: order by this column, ascending or descending; the same key again drops that column from the order (the others stay), the other key flips its direction
+- On a user view or a `:sql` result, `o`/`O` sort the rows in memory (NULLs as PostgreSQL puts them; `:order` restores how they came), and `:sql` starts from the view's SQL with its parameters filled
 - `x`: hide this column (`:show` brings them all back); `:sql` on a table starts as the grid's SELECT: its shown columns, `:where` and order
 - `I`, `S`, `J`, `U`: INSERT template, Go struct, JSON of the row, UPDATE of the row (INSERT and UPDATE run when saved changed)
 - `:`: command line; `?`: help

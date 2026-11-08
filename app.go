@@ -44,7 +44,7 @@ type app struct {
 	input  kit.Input
 	onLine func(a *app, line string)
 	onEdit func(a *app, line string) // each keystroke, for a live filter
-	onTab  func(line string) (names, words []string)
+	onTab  func(line string) completion
 	menu   *tabMenu          // open while Tab walks several matches
 	onPick func(item string) // the menu's choice as it moves; "" is ESC
 
@@ -195,11 +195,11 @@ func (a *app) tab() {
 		return
 	}
 	line := a.input.String()
-	names, words := a.onTab(line)
-	line, head, found := complete(line, names, words)
-	a.input.Set(line)
+	c := a.onTab(line)
+	line, head, found := complete(line, c)
+	a.setLine(line)
 	if len(found) > 1 {
-		a.menu = &tabMenu{head: head, typed: line, items: found, at: -1}
+		a.menu = &tabMenu{head: head, typed: line, sep: c.sep, items: found, at: -1}
 	}
 }
 
@@ -214,15 +214,15 @@ func (a *app) menuKey(k screen.Key) bool {
 	}
 	switch k {
 	case screen.KeyTab, screen.KeyRight:
-		a.input.Set(m.move(1))
+		a.setLine(m.move(1))
 		pick(m.items[m.at])
 		return true
 	case screen.KeyBackTab, screen.KeyLeft:
-		a.input.Set(m.move(-1))
+		a.setLine(m.move(-1))
 		pick(m.items[m.at])
 		return true
 	case screen.KeyEsc:
-		a.input.Set(m.typed)
+		a.setLine(m.typed)
 		a.menu = nil
 		pick("")
 		return true
@@ -231,11 +231,19 @@ func (a *app) menuKey(k screen.Key) bool {
 		if m.at < 0 {
 			return false // nothing chosen: Enter runs the line
 		}
-		a.input.Set(m.head + m.items[m.at] + " ")
+		a.setLine(m.head + m.items[m.at] + m.sep)
 		return true
 	}
 	a.menu = nil
 	return false
+}
+
+// setLine replaces the line as typing would, a live filter following it.
+func (a *app) setLine(line string) {
+	a.input.Set(line)
+	if a.onEdit != nil {
+		a.onEdit(a, line)
+	}
 }
 
 func (a *app) asking() bool { return a.onLine != nil }
