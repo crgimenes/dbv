@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,9 @@ func TestMaskQueryPassword(t *testing.T) {
 }
 
 func TestWriteOutputRefusesSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the selector's guard is Unix-only (output_unix.go)")
+	}
 	dir := t.TempDir()
 	target := filepath.Join(dir, "precious")
 	err := os.WriteFile(target, []byte("keep"), 0o600)

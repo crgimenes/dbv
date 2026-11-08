@@ -6,18 +6,21 @@
 
 ## Features
 
-- **List Tables & Views**: Displays tables, views, and materialized views along with primary keys and approximate sizes.
+- **List Tables & Views**: Displays tables, partitioned tables, views, and materialized views along with primary keys and approximate sizes.
 - **Data Browsing**: Scroll through table records with built-in pagination.
 - **Cell Editing**: Edit cell values directly with automatic conversions for timestamps and numeric types.
 - **Insert Statement Generation**: Create template SQL INSERT statements that include default values and respect primary key order.
 - **Go Struct Generation**: Generate Go struct definitions based on table columns (mapping PostgreSQL types to Go types).
 - **JSON Export**: Convert table rows into JSON structures.
+- **User Views**: `.sql` files in a views directory appear in the table list; `{{name:type:title:order}}` tokens become a form to fill in before the query runs (read only).
+- **SSH Tunnel**: `ssh+postgres://` URLs reach a database through ssh, reading `~/.ssh/config`.
+- **Command Line for Scripts and Agents**: one-shot, read-only commands with text or JSON output.
 - **Filo Configuration**: Configure database connections using [Filo](https://github.com/crgimenes/filo) scripts (e.g., `init.filo`).
 - **Keyboard Shortcuts**: Navigate, filter, and execute commands with quick key bindings.
 
 ## Requirements
 
-- **Go 1.26** or later
+- **Go 1.27.1** or later (the version in `go.mod`), to build from source
 
 ## Installation
 
@@ -56,6 +59,28 @@ By default, dbv loads database connections from a [Filo](https://github.com/crgi
 
 > **Note:** `database` is not a built-in Filo operator — it is an application-specific function that dbv registers (via `RegisterBuiltin`) before evaluating the config file. Each `(database ...)` call appends one connection, so the file is simply a sequence of these calls, one per line.
 
+Files named on the command line (`dbv other.filo`) replace the default
+config. Unless the URL sets them, dbv adds `connect_timeout=10` and
+`statement_timeout=60s`, so an unreachable server or a held lock cannot
+freeze the interface.
+
+To go through ssh, prefix the scheme with `ssh+` and say where to listen
+locally; `sshalias` takes user, host, port and key from `~/.ssh/config`
+(`sshuser`, `sshhost`, `sshport`, `sshkey` override them, and
+`remotetarget` is the database address as seen from the ssh host):
+
+```scheme
+(database "ssh+postgres://user:pass@db:5432/app?sshalias=bastion&localport=5433&sslmode=disable" "App via bastion")
+```
+
+A user view is `NAME.sql` in the views directory (the third argument of
+`database`). Tokens `{{name:type:title:order}}` are asked for in a form and
+replaced by what is typed; only `name` is required:
+
+```sql
+SELECT id, name FROM users WHERE id BETWEEN {{lo::From id:1}} AND {{hi::To id:2}}
+```
+
 ## Usage
 
 ### Launching dbv
@@ -69,13 +94,15 @@ dbv
 
 - **Table Listing & Filtering**: Easily navigate and filter available tables.
 - **Data Viewing & Editing**: Scroll through records, edit cells, and generate SQL/struct/JSON using quick commands.
-- **Commands**: Use `:where`, `:insert`, `:struct`, and `:json` to interact with data.
+- **Commands**: `:where COND`, `:order`, `:insert`, `:struct`, `:json` and `:update` on a table; `:clear`, `:reload`, `:rename` and `:quit` on the table list.
+- **Selector mode**: `dbv -s` picks a table or column name (Space), a Go struct (`S`) or an INSERT (`I`) and writes it to `/tmp/dbv_output.txt`, for an editor running beside dbv to insert.
 
 ### Command line (scripts and agents)
 
 `dbv COMMAND [flags] [args]` answers once and exits, without the
-interactive interface. All commands are read-only: SQL runs inside a
-`READ ONLY` transaction.
+interactive interface. No command writes: `rows` and `query` run a single
+statement inside a `READ ONLY` transaction, and the others read the catalog
+with fixed queries.
 
 ```bash
 dbv dbs                                   # configured connections
@@ -101,10 +128,23 @@ screen you are on.
 
 ### Keyboard Shortcuts
 
-- `h`, `j`, `k`, `l`: Navigation
-- `e`, `v`, `p`: Edit/view the current cell
-- `:`: Open the command prompt
-- `q` or `Esc`: Exit
+Table list:
+
+- `↑↓` / `j k`, `PgUp PgDn`, `Home End`: move
+- `Enter`: open the table or view
+- `/`: filter by regular expression, live (`Esc` clears)
+- `:`: command line; `?`: help
+- `Esc`: back to the database menu; `q`: quit
+
+Table data:
+
+- `↑↓←→` / `h j k l`, `PgUp PgDn`: move; `g G`: first and last row; `Home End`: first and last column
+- `Enter`, `e`, `v`: edit the cell in `$EDITOR` (saved to the table; needs a primary key)
+- `p`: view the cell in `$PAGER`
+- `o`, `O`: order by this column, ascending or descending
+- `I`, `S`, `J`, `U`: INSERT template, Go struct, JSON of the row, UPDATE of the row (INSERT and UPDATE run when saved changed)
+- `:`: command line; `?`: help
+- `Esc`, `q`: back to the table list
 
 ## Examples
 
