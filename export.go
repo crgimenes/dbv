@@ -114,29 +114,10 @@ func (d *tableData) export(a *app, path string) {
 			res.Rows = append(res.Rows, d.rowAt(i))
 		}
 	default:
-		name, where, order := d.name, d.where, d.orderSQL()
-		err = a.busy("reading "+name, func(ctx context.Context) error {
-			rel, err := a.pg.Resolve(ctx, name)
+		err = a.busy("reading "+d.name, func(ctx context.Context) error {
+			q, err := d.selectSQL(ctx, a.pg, "*")
 			if err != nil {
 				return err
-			}
-			pk, err := a.pg.GetPrimaryKeyColumns(ctx, rel.SQL)
-			if err != nil {
-				return err
-			}
-			keys := []string{}
-			if order != "" {
-				keys = append(keys, order)
-			}
-			for _, c := range pk {
-				keys = append(keys, db.QuoteName(c)) // the grid's order: the key breaks ties
-			}
-			q := "SELECT * FROM " + rel.SQL
-			if where != "" {
-				q += " WHERE " + where
-			}
-			if len(keys) > 0 {
-				q += " ORDER BY " + strings.Join(keys, ", ")
 			}
 			res, err = a.pg.QueryReadOnly(ctx, exportMax, q)
 			return err
@@ -170,6 +151,34 @@ func (d *tableData) export(a *app, path string) {
 		return
 	}
 	a.say(kit.OK, "%d rows written to %s", len(res.Rows), path)
+}
+
+// selectSQL is the grid's query: its filter and its order, the key
+// breaking ties, cols chosen by the caller.
+func (d *tableData) selectSQL(ctx context.Context, pg *db.Postgres, cols string) (string, error) {
+	rel, err := pg.Resolve(ctx, d.name)
+	if err != nil {
+		return "", err
+	}
+	pk, err := pg.GetPrimaryKeyColumns(ctx, rel.SQL)
+	if err != nil {
+		return "", err
+	}
+	keys := []string{}
+	if len(d.order) > 0 {
+		keys = append(keys, d.orderSQL())
+	}
+	for _, c := range pk {
+		keys = append(keys, db.QuoteName(c))
+	}
+	q := "SELECT " + cols + "\nFROM " + rel.SQL
+	if d.where != "" {
+		q += "\nWHERE " + d.where
+	}
+	if len(keys) > 0 {
+		q += "\nORDER BY " + strings.Join(keys, ", ")
+	}
+	return q, nil
 }
 
 func expandHome(p string) (string, error) {

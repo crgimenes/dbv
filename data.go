@@ -34,6 +34,8 @@ type tableData struct {
 	query     bool // rows came from a user view's SQL: all loaded, its own order
 	columns   []db.ColumnInfo
 	header    []string
+	colBefore int // the cursor column when the command line opened
+	hidden    map[string]bool
 	rows      [][]string
 	nulls     [][]bool // a NULL, which shows as "NULL" but is not that text
 	raw       [][]any  // a view's rows as the driver typed them, for :export
@@ -230,6 +232,10 @@ func (d *tableData) status() string {
 	if len(d.rows) < d.total {
 		s += fmt.Sprintf(" · %d loaded", len(d.rows))
 	}
+	hidden := d.hiddenCount()
+	if hidden > 0 {
+		s += fmt.Sprintf(" · %d hidden", hidden)
+	}
 	if d.where != "" {
 		s += " · where " + d.where
 	}
@@ -241,18 +247,84 @@ func (d *tableData) status() string {
 
 // visible is the last column that fits from d.off in cols cells.
 func (d *tableData) visible(cols int) int {
-	used, last := 0, d.off
+	used, last, n := 0, d.off, 0
 	for i := d.off; i < len(d.widths); i++ {
-		used += d.widths[i]
-		if i > d.off {
-			used += colGap
+		if !d.shown(i) {
+			continue
 		}
-		if used > cols && i > d.off {
+		w := d.widths[i]
+		if n > 0 {
+			w += colGap
+		}
+		if used+w > cols && n > 0 {
 			break
 		}
-		last = i
+		used, last, n = used+w, i, n+1
 	}
 	return last
+}
+
+func (d *tableData) shown(i int) bool { return !d.hidden[d.header[i]] }
+
+// next is the first shown column from from in dir, from itself when there
+// is none that way.
+func (d *tableData) next(from, dir int) int {
+	for i := from + dir; i >= 0 && i < len(d.header); i += dir {
+		if d.shown(i) {
+			return i
+		}
+	}
+	return from
+}
+
+// fixCol keeps the cursor off a hidden column.
+func (d *tableData) fixCol() {
+	d.col = max(0, min(d.col, len(d.header)-1))
+	if len(d.header) > 0 && !d.shown(d.col) {
+		d.col = d.next(d.col, 1)
+	}
+	if len(d.header) > 0 && !d.shown(d.col) {
+		d.col = d.next(d.col, -1)
+	}
+}
+
+// hide takes the cursor's column off the grid; the last one stays.
+func (d *tableData) hide(a *app) {
+	if len(d.header)-d.hiddenCount() <= 1 {
+		a.say(kit.Warn, "the last column stays")
+		return
+	}
+	if d.hidden == nil {
+		d.hidden = map[string]bool{}
+	}
+	d.hidden[d.header[d.col]] = true
+	d.fixCol()
+	a.say(kit.Plain, "%d hidden · :show brings them back", d.hiddenCount())
+}
+
+// hiddenCount counts by the header: a column :sql dropped no longer counts.
+func (d *tableData) hiddenCount() int {
+	n := 0
+	for i := range d.header {
+		if !d.shown(i) {
+			n++
+		}
+	}
+	return n
+}
+
+// selectList is the shown columns for a SELECT, * when none is hidden.
+func (d *tableData) selectList() string {
+	if d.hiddenCount() == 0 {
+		return "*"
+	}
+	var cols []string
+	for i, h := range d.header {
+		if d.shown(i) {
+			cols = append(cols, sqlName(h))
+		}
+	}
+	return strings.Join(cols, ", ")
 }
 
 func (d *tableData) follow(rows, cols int) {
@@ -276,7 +348,7 @@ func (d *tableData) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
 		c.Print(top+1, left, "no columns", kit.Dim)
 		return
 	}
-	d.col = max(0, min(d.col, len(d.header)-1)) // a cursor past the header must never reach the paint
+	d.fixCol() // a cursor past the header must never reach the paint
 	d.off = min(d.off, d.col)
 	body := rows - 2
 	d.follow(body, cols)
@@ -284,6 +356,9 @@ func (d *tableData) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
 
 	at := left
 	for i := d.off; i <= last; i++ {
+		if !d.shown(i) {
+			continue
+		}
 		w := min(d.widths[i], left+cols-at)
 		c.Print(top, at, kit.Pad(d.header[i], w), kit.Soft)
 		at += d.widths[i] + colGap
@@ -294,6 +369,9 @@ func (d *tableData) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
 		i := d.first + r
 		at = left
 		for j := d.off; j <= last; j++ {
+			if !d.shown(j) {
+				continue
+			}
 			w := min(d.widths[j], left+cols-at)
 			v := d.rows[i][j]
 			first, _, multi := strings.Cut(v, "\n")
@@ -318,10 +396,10 @@ func (d *tableData) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
 	if len(d.rows) == 0 {
 		c.Print(top+2, left, "no rows", kit.Dim)
 	}
-	if d.off > 0 {
+	if d.next(d.off, -1) != d.off {
 		c.Print(top, left-2, "‹", kit.Hot)
 	}
-	if last < len(d.header)-1 {
+	if d.next(last, 1) != last {
 		c.Print(top, left+cols, "›", kit.Hot)
 	}
 }
@@ -346,13 +424,15 @@ func (d *tableData) key(a *app, k screen.Key) {
 	case screen.KeyPgDn:
 		d.row = min(len(d.rows)-1, d.row+page)
 	case screen.KeyHome:
-		d.col = 0
+		d.col = d.next(-1, 1)
 	case screen.KeyEnd:
-		d.col = len(d.header) - 1
+		d.col = d.next(len(d.header), -1)
 	case screen.KeyLeft:
-		d.col = max(0, d.col-1)
+		d.col = d.next(d.col, -1)
 	case screen.KeyRight:
-		d.col = min(len(d.header)-1, d.col+1)
+		d.col = d.next(d.col, 1)
+	case 'x':
+		d.hide(a)
 	case 'g':
 		d.row = 0
 	case 'G':
@@ -388,6 +468,8 @@ func (d *tableData) key(a *app, k screen.Key) {
 		d.run(a, "update")
 	case ':':
 		a.ask(":", "", d.command) // ↑ brings the last one back
+		a.onTab, a.onPick = d.completions, d.pick
+		d.colBefore = d.col
 	case '?':
 		a.push(&helpView{lines: dataHelp})
 	}
@@ -407,6 +489,21 @@ func (d *tableData) more(a *app, page int) {
 	}
 }
 
+// toggleOrder is o and O on col: a new key goes last, the same key again
+// undoes it and the other direction flips it, the other keys untouched.
+func toggleOrder(order []orderBy, col, dir string) []orderBy {
+	order = slices.Clone(order)
+	i := slices.IndexFunc(order, func(o orderBy) bool { return o.col == col })
+	switch {
+	case i < 0:
+		return append(order, orderBy{col, dir})
+	case order[i].dir == dir:
+		return slices.Delete(order, i, i+1)
+	}
+	order[i].dir = dir
+	return order
+}
+
 func (d *tableData) orderBy(a *app, dir string) {
 	if d.query {
 		a.say(kit.Warn, "a view's query has its own order")
@@ -414,15 +511,7 @@ func (d *tableData) orderBy(a *app, dir string) {
 	}
 	col := d.header[d.col]
 	before := slices.Clone(d.order)
-	found := false
-	for i := range d.order {
-		if d.order[i].col == col {
-			d.order[i].dir, found = dir, true
-		}
-	}
-	if !found {
-		d.order = append(d.order, orderBy{col, dir})
-	}
+	d.order = toggleOrder(before, col, dir)
 	err := d.reset(a)
 	if err != nil {
 		d.order = before // the rows on screen are still in the old order
@@ -456,12 +545,44 @@ func (d *tableData) command(a *app, line string) {
 		}
 	case cmd == "insert" || cmd == "struct" || cmd == "json" || cmd == "update":
 		d.run(a, cmd)
+	case cmd == "show":
+		d.hidden = nil
 	case cmd == "sql":
 		runSQL(a)
 	case strings.HasPrefix(cmd, "export"):
 		d.export(a, strings.TrimPrefix(cmd, "export"))
 	default:
 		a.say(kit.Err, "unknown command %q (?)", cmd)
+	}
+}
+
+var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "export", "q"}
+
+// completions are what Tab offers at the grid's ":": a command first, then
+// in a :where the columns and the words between them.
+func (d *tableData) completions(line string) ([]string, []string) {
+	line = strings.TrimLeft(line, " ")
+	if strings.HasPrefix(line, "where ") && !d.query {
+		return d.header, whereWords
+	}
+	if strings.ContainsRune(line, ' ') {
+		return nil, nil
+	}
+	return nil, dataCommands
+}
+
+// pick puts the cursor on the column the Tab menu chose, so its data
+// shows while the :where is written; ESC puts it back.
+func (d *tableData) pick(item string) {
+	if item == "" {
+		d.col = d.colBefore
+		return
+	}
+	for i, h := range d.header {
+		if sqlName(h) == item {
+			d.col = i
+			return
+		}
 	}
 }
 
@@ -628,12 +749,13 @@ var dataHelp = []string{
 	"enter e v      edit the cell in $EDITOR (saved to the table)",
 	"p              view the cell in $PAGER",
 	"y Y            copy the cell, the row (tab-separated) to the clipboard",
-	"o O            order by this column, ascending or descending",
+	"o O            order by this column, ascending or descending; again undoes",
+	"x              hide this column (:show brings them all back)",
 	"I S J U        INSERT, Go struct, JSON of the row, UPDATE of the row",
-	":where COND    filter rows (:where alone clears)",
+	":where COND    filter rows (:where alone clears); tab completes",
 	":order         clear the order",
 	":insert :struct :json :update  the same as I S J U",
-	":sql           write SQL in $EDITOR and run it (writes too)",
+	":sql           write SQL in $EDITOR and run it (writes too); starts as the grid's SELECT",
 	":export F.csv  every row of the filter (or .json), to a new file",
 	"esc q          back to the tables",
 }

@@ -44,13 +44,17 @@ type app struct {
 	input  kit.Input
 	onLine func(a *app, line string)
 	onEdit func(a *app, line string) // each keystroke, for a live filter
+	onTab  func(line string) (names, words []string)
+	menu   *tabMenu          // open while Tab walks several matches
+	onPick func(item string) // the menu's choice as it moves; "" is ESC
 
 	// what was entered at each prompt, oldest first; yagni: kept for the
 	// session only, a file in the state directory when someone misses it
 	sqlText string // the last :sql that ran, to edit again
 
-	history map[string][]string
-	histAt  int // len(history[prompt]) while typing a new line
+	history   map[string][]string
+	histAt    int    // len(history[prompt]) while typing a new line
+	histDraft string // the line being typed, while ↑ shows older ones
 }
 
 const historyMax = 100
@@ -138,7 +142,7 @@ func (a *app) ask(prompt, value string, done func(a *app, line string)) {
 	a.input = kit.Input{Max: 4096}
 	a.input.Set(value)
 	a.onLine = done
-	a.onEdit = nil
+	a.onEdit, a.onTab, a.onPick, a.menu = nil, nil, nil, nil
 	a.note = ""
 	a.histAt = len(a.history[a.histKey()])
 }
@@ -164,11 +168,19 @@ func (a *app) remember(line string) {
 	a.history[a.histKey()] = h
 }
 
-// recall walks the prompt's history; past the newest the line is empty.
+// recall walks the prompt's history the way a shell does: nothing to walk
+// leaves the line alone, and past the newest comes back what was typed.
 func (a *app) recall(d int) {
 	h := a.history[a.histKey()]
-	a.histAt = max(0, min(len(h), a.histAt+d))
-	line := ""
+	at := max(0, min(len(h), a.histAt+d))
+	if at == a.histAt {
+		return
+	}
+	if a.histAt == len(h) {
+		a.histDraft = a.input.String()
+	}
+	a.histAt = at
+	line := a.histDraft
 	if a.histAt < len(h) {
 		line = h[a.histAt]
 	}
@@ -178,10 +190,58 @@ func (a *app) recall(d int) {
 	}
 }
 
+func (a *app) tab() {
+	if a.onTab == nil {
+		return
+	}
+	line := a.input.String()
+	names, words := a.onTab(line)
+	line, head, found := complete(line, names, words)
+	a.input.Set(line)
+	if len(found) > 1 {
+		a.menu = &tabMenu{head: head, typed: line, items: found, at: -1}
+	}
+}
+
+// menuKey is a key while the Tab menu is open; false hands it on to the
+// line, the menu closed and the chosen word kept.
+func (a *app) menuKey(k screen.Key) bool {
+	m := a.menu
+	pick := func(item string) {
+		if a.onPick != nil {
+			a.onPick(item)
+		}
+	}
+	switch k {
+	case screen.KeyTab, screen.KeyRight:
+		a.input.Set(m.move(1))
+		pick(m.items[m.at])
+		return true
+	case screen.KeyBackTab, screen.KeyLeft:
+		a.input.Set(m.move(-1))
+		pick(m.items[m.at])
+		return true
+	case screen.KeyEsc:
+		a.input.Set(m.typed)
+		a.menu = nil
+		pick("")
+		return true
+	case screen.KeyEnter:
+		a.menu = nil
+		if m.at < 0 {
+			return false // nothing chosen: Enter runs the line
+		}
+		a.input.Set(m.head + m.items[m.at] + " ")
+		return true
+	}
+	a.menu = nil
+	return false
+}
+
 func (a *app) asking() bool { return a.onLine != nil }
 
 func (a *app) closeLine() {
-	a.onLine, a.onEdit, a.prompt = nil, nil, ""
+	a.onLine, a.onEdit, a.onTab, a.onPick, a.menu, a.prompt = nil, nil, nil, nil, nil, ""
 }
 
 func (a *app) run() error {
@@ -219,6 +279,9 @@ func (a *app) handle(k screen.Key) {
 		a.top().key(a, k)
 		return
 	}
+	if a.menu != nil && a.menuKey(k) {
+		return
+	}
 	switch k {
 	case screen.KeyEsc:
 		done := a.onEdit
@@ -235,6 +298,8 @@ func (a *app) handle(k screen.Key) {
 		a.recall(-1)
 	case screen.KeyDown:
 		a.recall(1)
+	case screen.KeyTab:
+		a.tab()
 	default:
 		a.input.Key(k)
 		if a.onEdit != nil {
@@ -262,6 +327,13 @@ func (a *app) paint() {
 	kit.Frame(a.c, 0, 0, h-2, w, v.title())
 	v.draw(a, a.c, 1, 2, h-4, w-4)
 	kit.Legend(a.c, h-2, 1, w-2, v.hints()...)
+	if a.menu != nil {
+		a.menu.draw(a.c, h-2, 1, w-2)
+	}
+	if a.asking() && a.menu == nil && a.note != "" {
+		a.c.Fill(h-2, 1, 1, w-2, ' ', kit.Text)
+		kit.Note(a.c, h-2, 1, w-2, a.tone, a.note) // the line's own row is taken
+	}
 	if a.asking() {
 		n := a.c.Print(h-1, 1, a.prompt, kit.Hot)
 		a.input.Draw(a.c, h-1, 1+n, w-2-n, kit.Text, true)

@@ -25,6 +25,18 @@ func runSQL(a *app) {
 	if text == "" {
 		text = sqlTemplate
 	}
+	d, ok := a.top().(*tableData)
+	if ok && !d.query {
+		err := a.busy("reading "+d.name, func(ctx context.Context) error {
+			q, err := d.selectSQL(ctx, a.pg, d.selectList())
+			text = sqlTemplate + q + ";\n" // what the grid shows, to start from
+			return err
+		})
+		if err != nil {
+			a.fail(err)
+			return
+		}
+	}
 	raw, err := a.edit(text)
 	if err != nil {
 		a.fail(err)
@@ -56,7 +68,6 @@ func runSQL(a *app) {
 		wrote = wrote || !strings.HasPrefix(st.Tag, "SELECT")
 	}
 	if wrote {
-		d, ok := a.top().(*tableData)
 		if ok && !d.query {
 			d.reload(a) // the rows on screen may be among the changed ones
 		}
@@ -65,14 +76,14 @@ func runSQL(a *app) {
 		if len(st.Columns) == 0 {
 			continue
 		}
-		d := &tableData{name: "SQL", pk: "-", readOnly: true, query: true, columns: st.Columns, truncated: st.Truncated}
-		d.setHeader()
+		g := &tableData{name: "SQL", pk: "-", readOnly: true, query: true, columns: st.Columns, truncated: st.Truncated}
+		g.setHeader()
 		for _, r := range st.Rows {
-			d.add(r)
+			g.add(r)
 		}
-		d.total = len(d.rows)
-		d.measure()
-		a.push(d)
+		g.total = len(g.rows)
+		g.measure()
+		a.push(g)
 		if st.Truncated {
 			a.say(kit.Warn, "%s · showing the first %d rows", strings.Join(tags, "; "), queryRowsMax)
 			return
