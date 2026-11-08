@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -17,7 +18,7 @@ type Rel struct {
 // Resolve accepts a bare relation name as the catalog lists it ("Order
 // Items", "Users") or a qualified one as typed ("archive.users"). A bare
 // name is tried quoted first, so its case and spaces stay its own.
-func (pg *Postgres) Resolve(name string) (Rel, error) {
+func (pg *Postgres) Resolve(ctx context.Context, name string) (Rel, error) {
 	const q = `SELECT
 	c.oid,                  -- 1
 	c.oid::regclass::text,  -- 2
@@ -27,7 +28,7 @@ FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.oid = COALESCE(to_regclass(quote_ident($1)), to_regclass($1))`
 	var r Rel
-	err := pg.DB.QueryRow(q, name).Scan(
+	err := pg.DB.QueryRowContext(ctx, q, name).Scan(
 		&r.OID,    // 1
 		&r.SQL,    // 2
 		&r.Schema, // 3

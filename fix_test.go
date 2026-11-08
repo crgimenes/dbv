@@ -139,7 +139,7 @@ CREATE TABLE dbv_parent (id int PRIMARY KEY, v text);
 CREATE TABLE dbv_child () INHERITS (dbv_parent);
 INSERT INTO dbv_parent VALUES (1, 'p'); INSERT INTO dbv_child VALUES (1, 'c');`)
 
-	recs, cols, total, err := pg.ListRecords("Order Items", "", 0, 10, "", "")
+	recs, cols, total, err := pg.ListRecords(context.Background(), "Order Items", "", 0, 10, "", "")
 	if err != nil || total != 2 || len(cols) != 3 {
 		t.Fatalf("browse: %v total %d cols %d", err, total, len(cols))
 	}
@@ -147,7 +147,7 @@ INSERT INTO dbv_parent VALUES (1, 'p'); INSERT INTO dbv_child VALUES (1, 'c');`)
 		t.Fatalf("keys must keep their digits: %v %v", recs[0]["Price"], recs[1]["Price"])
 	}
 
-	err = pg.UpdateDataCell("Order Items", "note", "changed", []string{"Price"}, []any{"1.234"})
+	err = pg.UpdateDataCell(context.Background(), "Order Items", "note", "changed", []string{"Price"}, []any{"1.234"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ INSERT INTO dbv_parent VALUES (1, 'p'); INSERT INTO dbv_child VALUES (1, 'c');`)
 		t.Fatalf("text 'null' must stay text:\n%s %v", stmt, err)
 	}
 
-	err = pg.UpdateDataCell("dbv_parent", "v", "z", []string{"id"}, []any{"1"})
+	err = pg.UpdateDataCell(context.Background(), "dbv_parent", "v", "z", []string{"id"}, []any{"1"})
 	if err != nil {
 		t.Fatal(err)
 	}

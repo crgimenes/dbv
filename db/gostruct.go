@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"unicode"
@@ -19,7 +20,8 @@ func toTitle(s string) string {
 }
 
 func (pg *Postgres) CreateGoStructDefinition(tableName string) (string, error) {
-	rel, err := pg.Resolve(tableName)
+	ctx := context.Background()
+	rel, err := pg.Resolve(ctx, tableName)
 	if err != nil {
 		return "", err
 	}
@@ -38,7 +40,7 @@ func (pg *Postgres) CreateGoStructDefinition(tableName string) (string, error) {
 		DataType   string `db:"data_type"`
 	}
 	var cols []simpleColumnInfo
-	if err := pg.DB.Select(&cols, sqlStatement, rel.Schema, rel.Name); err != nil {
+	if err := pg.DB.SelectContext(ctx, &cols, sqlStatement, rel.Schema, rel.Name); err != nil {
 		return "", fmt.Errorf("error fetching columns: %w", err)
 	}
 	if len(cols) == 0 {

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,17 +15,22 @@ import (
 	"github.com/crgimenes/dbv/db"
 )
 
-const usage = `dbv [file.filo ...]
+const usage = `dbv [-s] [-debug] [file.filo ...]
 dbv COMMAND [flags] [args]
 
 Terminal viewer and editor for PostgreSQL. With no command it opens the
 interactive interface; with a command it answers once and exits, for
 scripts and agents. Connections come from init.filo in the config
 directory (macOS: ~/Library/Application Support/dbv, Linux:
-~/.config/dbv), or ./init.filo.
+~/.config/dbv), or ./init.filo; files named instead replace it.
 
-Commands (none writes: rows and query run one statement in a READ ONLY
-transaction, the others read the catalog with fixed queries):
+Interface flags:
+  -s           selector: pick a name, struct or INSERT into /tmp/dbv_output.txt
+  -debug       one line per event on stderr; redirect it (2>dbv.log), since
+               the interface owns the terminal
+
+Reading (rows and query run one statement in a READ ONLY transaction, the
+others read the catalog with fixed queries):
   dbs                 configured connections
   tables              tables, views and materialized views
   columns TABLE       columns of a table, in table order
@@ -35,12 +39,24 @@ transaction, the others read the catalog with fixed queries):
   struct TABLE        Go struct for a table
   insert TABLE        INSERT template for a table (not executed)
 
+Writing (refused without -write):
+  exec [SQL | -]      run SQL, all of it in one transaction
+  update TABLE COLUMN VALUE
+                      set one cell; -key names the whole primary key and
+                      must match exactly one row, or nothing changes
+
 Common flags (before the arguments):
+  -config FILE connections from FILE instead of the default init.filo
   -db NAME     connection by title or 1-based number (default: the only one)
   -json        JSON on stdout instead of text
   -timeout D   bound for the whole command (default 30s)
+  -debug       one line per step on stderr: "dbv event: OP ms=N key=value ..."
 rows and query:
   -limit N     at most N rows (default 1000); a cut is reported on stderr
+exec and update:
+  -write       allow the change (without it the command refuses, exit 2)
+update:
+  -key COL=VAL a primary key column and its value; repeat for each column
 rows:
   -where SQL   WHERE clause, without the keyword
   -order SQL   ORDER BY clause, without the keyword (default: primary key)
@@ -53,9 +69,13 @@ Example:
   dbv -h
   dbv query -db 1 -json 'SELECT id, name FROM users LIMIT 5'
   echo 'SELECT now()' | dbv query -db LocalDB
+  dbv update -db 1 -write -key id=7 users name 'Ana Maria'
 `
 
 type cliOpts struct {
+	config  string
+	write   bool
+	keys    keyList
 	db      string
 	json    bool
 	timeout time.Duration
@@ -66,8 +86,9 @@ type cliOpts struct {
 }
 
 type command struct {
-	args int // required positional arguments; -1 means optional SQL
-	run  func(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) error
+	writes bool
+	args   int // required positional arguments; -1 means optional SQL
+	run    func(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) error
 }
 
 var commands = map[string]command{
@@ -78,6 +99,22 @@ var commands = map[string]command{
 	"query":   {args: -1, run: cmdQuery},
 	"struct":  {args: 1, run: cmdStruct},
 	"insert":  {args: 1, run: cmdInsert},
+	"exec":    {args: -1, run: cmdExec, writes: true},
+	"update":  {args: 3, run: cmdUpdate, writes: true},
+}
+
+// keyList is -key COL=VAL, repeated.
+type keyList []string
+
+func (k *keyList) String() string { return strings.Join(*k, ",") }
+
+func (k *keyList) Set(v string) error {
+	col, _, ok := strings.Cut(v, "=")
+	if !ok || col == "" {
+		return fmt.Errorf("want COL=VAL, got %q", v)
+	}
+	*k = append(*k, v)
+	return nil
 }
 
 func isHelp(arg string) bool {
@@ -90,6 +127,9 @@ func runCLI(name string, argv []string) int {
 	var o cliOpts
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	fs.StringVar(&o.config, "config", "", "")
+	fs.BoolVar(&o.write, "write", false, "")
+	fs.Var(&o.keys, "key", "")
 	fs.StringVar(&o.db, "db", "", "")
 	fs.BoolVar(&o.json, "json", false, "")
 	fs.DurationVar(&o.timeout, "timeout", 30*time.Second, "")
@@ -97,6 +137,7 @@ func runCLI(name string, argv []string) int {
 	fs.StringVar(&o.where, "where", "", "")
 	fs.StringVar(&o.order, "order", "", "")
 	fs.IntVar(&o.offset, "offset", 0, "")
+	debug := fs.Bool("debug", false, "")
 
 	err := fs.Parse(argv)
 	if errors.Is(err, flag.ErrHelp) {
@@ -107,10 +148,26 @@ func runCLI(name string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "dbv %s: %v\n", name, err)
 		return 2
 	}
+	if *debug {
+		debugOut = os.Stderr
+	}
+	cliStart := debugNow()
 	args := fs.Args()
 	if cmd.args >= 0 && len(args) != cmd.args {
 		fmt.Fprintf(os.Stderr, "dbv %s: want %d argument(s), got %d (dbv -h)\n", name, cmd.args, len(args))
 		return 2
+	}
+	if cmd.writes && !o.write {
+		fmt.Fprintf(os.Stderr, "dbv %s: this changes data; add -write to allow it\n", name)
+		return 2
+	}
+	path := configPath()
+	if o.config != "" {
+		if !fileExists(o.config) {
+			fmt.Fprintf(os.Stderr, "dbv %s: no config file %q\n", name, o.config)
+			return 2
+		}
+		path = o.config
 	}
 	if o.limit < 1 || o.offset < 0 {
 		fmt.Fprintf(os.Stderr, "dbv %s: -limit must be > 0 and -offset >= 0\n", name)
@@ -127,7 +184,7 @@ func runCLI(name string, argv []string) int {
 	})
 	defer watchdog.Stop()
 
-	configs := loadDBConfigs(configPath())
+	configs := loadDBConfigs(path)
 	if name == "dbs" {
 		return report(name, cmdDBs(configs, o))
 	}
@@ -136,12 +193,16 @@ func runCLI(name string, argv []string) int {
 	if err != nil {
 		return report(name, err)
 	}
+	connStart := debugNow()
 	pg, err := db.New(cfg.URL)
+	debugEvent("connect", connStart, "title", cfg.Title, "err", err)
 	if err != nil {
 		return report(name, fmt.Errorf("connect %q: %w", cfg.Title, err))
 	}
 	defer pg.Close()
-	return report(name, cmd.run(ctx, pg, o, args))
+	err = cmd.run(ctx, pg, o, args)
+	debugEvent("command", cliStart, "name", name, "err", err)
+	return report(name, err)
 }
 
 func report(name string, err error) int {
@@ -175,9 +236,7 @@ func pickConfig(configs []db.DBConfig, want string) (db.DBConfig, error) {
 }
 
 func writeJSON(v any) error {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetEscapeHTML(false)
-	return enc.Encode(v)
+	return encodeJSON(os.Stdout, v)
 }
 
 func writeText(records [][]string) error {
@@ -258,27 +317,14 @@ func cmdColumns(_ context.Context, pg *db.Postgres, o cliOpts, args []string) er
 	return writeText(records)
 }
 
-type columnJSON struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
-}
-
-func columnsJSON(cols []db.ColumnInfo) []columnJSON {
-	out := make([]columnJSON, 0, len(cols))
-	for _, c := range cols {
-		out = append(out, columnJSON{Name: c.ColumnName, Type: c.DataType})
-	}
-	return out
-}
-
 func cmdRows(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) error {
-	rel, err := pg.Resolve(args[0])
+	rel, err := pg.Resolve(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	order := o.order
 	if order == "" {
-		pk, err := pg.GetPrimaryKeyColumns(rel.SQL)
+		pk, err := pg.GetPrimaryKeyColumns(ctx, rel.SQL)
 		if err != nil {
 			return err
 		}
@@ -300,28 +346,17 @@ func cmdRows(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) err
 }
 
 func cmdQuery(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) error {
-	if len(args) > 1 {
-		return errors.New("one SQL argument at most; quote it")
-	}
-	sqlText := ""
-	if len(args) == 1 {
-		sqlText = args[0]
-	}
-	if sqlText == "" || sqlText == "-" {
-		b, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return err
-		}
-		sqlText = strings.TrimPrefix(string(b), "\uFEFF")
-	}
-	if strings.TrimSpace(sqlText) == "" {
-		return errors.New("empty SQL")
+	sqlText, err := readSQL(args)
+	if err != nil {
+		return err
 	}
 	return printResult(ctx, pg, o, sqlText)
 }
 
 func printResult(ctx context.Context, pg *db.Postgres, o cliOpts, query string) error {
+	start := debugNow()
 	res, err := pg.QueryReadOnly(ctx, o.limit, query)
+	debugEvent("query", start, "rows", len(res.Rows), "truncated", res.Truncated, "err", err)
 	if err != nil {
 		return err
 	}
@@ -329,41 +364,9 @@ func printResult(ctx context.Context, pg *db.Postgres, o cliOpts, query string) 
 		fmt.Fprintf(os.Stderr, "dbv: stopped at %d rows; raise -limit for more\n", o.limit)
 	}
 	if o.json {
-		rows := res.Rows
-		if rows == nil {
-			rows = [][]any{}
-		}
-		for _, r := range rows {
-			for i, v := range r {
-				s, ok := v.(string)
-				t := res.Columns[i].DataType
-				if ok && (t == "json" || t == "jsonb") {
-					r[i] = json.RawMessage(s)
-				}
-			}
-		}
-		return writeJSON(struct {
-			Columns   []columnJSON `json:"columns"`
-			Rows      [][]any      `json:"rows"`
-			Truncated bool         `json:"truncated"`
-		}{columnsJSON(res.Columns), rows, res.Truncated})
+		return encodeJSON(os.Stdout, resultJSON(res))
 	}
-	header := make([]string, 0, len(res.Columns))
-	for _, c := range res.Columns {
-		header = append(header, c.ColumnName)
-	}
-	records := [][]string{header}
-	for _, r := range res.Rows {
-		line := make([]string, len(r))
-		for i, v := range r {
-			line[i] = "NULL"
-			if v != nil {
-				line[i] = fmt.Sprint(v)
-			}
-		}
-		records = append(records, line)
-	}
-	return writeText(records)
+	return writeCSV(os.Stdout, ';', res, "NULL")
 }
 
 func printSource(o cliOpts, key, text string) error {
@@ -388,4 +391,78 @@ func cmdInsert(_ context.Context, pg *db.Postgres, o cliOpts, args []string) err
 		return err
 	}
 	return printSource(o, "sql", s)
+}
+
+func readSQL(args []string) (string, error) {
+	if len(args) > 1 {
+		return "", errors.New("one SQL argument at most; quote it")
+	}
+	sqlText := ""
+	if len(args) == 1 {
+		sqlText = args[0]
+	}
+	if sqlText == "" || sqlText == "-" {
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", err
+		}
+		sqlText = strings.TrimPrefix(string(b), "\uFEFF")
+	}
+	if strings.TrimSpace(sqlText) == "" {
+		return "", errors.New("empty SQL")
+	}
+	return sqlText, nil
+}
+
+func cmdExec(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) error {
+	sqlText, err := readSQL(args)
+	if err != nil {
+		return err
+	}
+	start := debugNow()
+	n, err := pg.ExecTx(ctx, sqlText)
+	debugEvent("exec", start, "rows_affected", n, "err", err)
+	if err != nil {
+		return err
+	}
+	if o.json {
+		return writeJSON(map[string]int64{"rows_affected": n})
+	}
+	_, err = fmt.Println(n)
+	return err
+}
+
+func cmdUpdate(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) error {
+	table, column, value := args[0], args[1], args[2]
+	pk, err := pg.GetPrimaryKeyColumns(ctx, table)
+	if err != nil {
+		return err
+	}
+	if len(pk) == 0 {
+		return fmt.Errorf("%s has no primary key: use exec", table)
+	}
+	given := make(map[string]string, len(o.keys))
+	for _, kv := range o.keys {
+		col, val, _ := strings.Cut(kv, "=")
+		given[col] = val
+	}
+	values := make([]any, len(pk))
+	for i, col := range pk {
+		v, ok := given[col]
+		if !ok || len(given) != len(pk) {
+			return fmt.Errorf("-key must name the whole primary key: %s", strings.Join(pk, ", "))
+		}
+		values[i] = v
+	}
+	start := debugNow()
+	err = pg.UpdateDataCell(ctx, table, column, value, pk, values)
+	debugEvent("update_cell", start, "table", table, "column", column, "err", err)
+	if err != nil {
+		return err
+	}
+	if o.json {
+		return writeJSON(map[string]int64{"rows_affected": 1})
+	}
+	_, err = fmt.Println(1)
+	return err
 }

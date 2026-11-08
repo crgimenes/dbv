@@ -28,18 +28,19 @@ type orderBy struct {
 // tableData is a table's rows (or a query's) in a grid with a cell cursor.
 // Rows load a page at a time as the cursor nears the end of what is loaded.
 type tableData struct {
-	name     string
-	pk       string // "-" or empty: read only
-	readOnly bool
-	query    bool // rows came from a user view's SQL: all loaded, its own order
-	columns  []db.ColumnInfo
-	header   []string
-	rows     [][]string
-	nulls    [][]bool // a NULL, which shows as "NULL" but is not that text
-	total    int
-	where    string
-	order    []orderBy
-	lastCmd  string
+	name      string
+	pk        string // "-" or empty: read only
+	readOnly  bool
+	query     bool // rows came from a user view's SQL: all loaded, its own order
+	columns   []db.ColumnInfo
+	header    []string
+	rows      [][]string
+	nulls     [][]bool // a NULL, which shows as "NULL" but is not that text
+	raw       [][]any  // a view's rows as the driver typed them, for :export
+	truncated bool     // a view's or :sql's rows stopped at the cap
+	total     int
+	where     string
+	order     []orderBy
 
 	row, col   int // the cursor, in rows and header
 	first, off int // first row shown, first column shown
@@ -59,9 +60,16 @@ const (
 // newQueryData shows a user view's answer. The view runs in a READ ONLY
 // transaction: a file in the views directory is a query, never a change.
 func newQueryData(a *app, name, sql string) (*tableData, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-	res, err := a.pg.QueryReadOnly(ctx, queryRowsMax, sql)
+	var res db.Result
+	start := debugNow()
+	err := a.busy("running "+name, func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+		defer cancel()
+		var err error
+		res, err = a.pg.QueryReadOnly(ctx, queryRowsMax, sql)
+		return err
+	})
+	debugEvent("view", start, "name", name, "rows", len(res.Rows), "truncated", res.Truncated, "err", err)
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +78,7 @@ func newQueryData(a *app, name, sql string) (*tableData, error) {
 	for _, r := range res.Rows {
 		d.add(r)
 	}
+	d.raw, d.truncated = res.Rows, res.Truncated
 	d.total = len(d.rows)
 	d.measure()
 	if res.Truncated {
@@ -107,31 +116,77 @@ func (d *tableData) orderSQL() string {
 	return strings.Join(parts, ", ")
 }
 
+// reset reads the first page again; until it arrives (or if it fails, or
+// is cancelled) the rows on screen stay as they were.
 func (d *tableData) reset(a *app) error {
-	d.rows, d.nulls, d.row, d.first = nil, nil, 0, 0
-	return d.load(a)
-}
-
-func (d *tableData) load(a *app) error {
-	pk := d.pk
-	if pk == "-" {
-		pk = ""
-	}
-	recs, columns, total, err := a.pg.ListRecords(d.name, pk, len(d.rows), recordsPerPage, d.where, d.orderSQL())
+	p, err := d.page(a, 0)
 	if err != nil {
 		return err
 	}
-	d.columns, d.total = columns, total
-	d.setHeader()
+	d.rows, d.nulls, d.row, d.first = nil, nil, 0, 0
+	d.apply(p)
+	return nil
+}
+
+func (d *tableData) load(a *app) error {
+	p, err := d.page(a, len(d.rows))
+	if err != nil {
+		return err
+	}
+	d.apply(p)
+	return nil
+}
+
+type pageOf struct {
+	rows    [][]any
+	columns []db.ColumnInfo
+	total   int
+}
+
+// page reads recordsPerPage rows from offset off the event loop: Esc
+// cancels it. It reads d but changes nothing.
+func (d *tableData) page(a *app, offset int) (pageOf, error) {
+	var p pageOf
+	name, where, order := d.name, d.where, d.orderSQL()
+	var recs []map[string]any
+	start := debugNow()
+	err := a.busy("reading "+name, func(ctx context.Context) error {
+		var err error
+		recs, p.columns, p.total, err = a.pg.ListRecords(ctx, name, "", offset, recordsPerPage, where, order)
+		return err
+	})
+	debugEvent("load", start, "table", name, "offset", offset, "rows", len(recs), "total", p.total,
+		"where", where, "order", order, "err", err)
+	if err != nil {
+		return p, err
+	}
 	for _, rec := range recs {
-		values := make([]any, len(columns))
-		for i, c := range columns {
+		values := make([]any, len(p.columns))
+		for i, c := range p.columns {
 			values[i] = rec[c.ColumnName]
 		}
-		d.add(values)
+		p.rows = append(p.rows, values)
+	}
+	return p, nil
+}
+
+func (d *tableData) apply(p pageOf) {
+	before := d.header
+	d.columns, d.total = p.columns, p.total
+	d.setHeader()
+	if !slices.Equal(before, d.header) {
+		// the table changed shape since the rows on screen were read: they
+		// no longer line up with the header
+		d.rows, d.nulls, d.raw = nil, nil, nil
+	}
+	for _, r := range p.rows {
+		d.add(r)
 	}
 	d.measure()
-	return nil
+	// the table may have lost columns since (an ALTER through :sql)
+	d.col = max(0, min(d.col, len(d.header)-1))
+	d.off = min(d.off, d.col)
+	d.row = max(0, min(d.row, len(d.rows)-1))
 }
 
 func (d *tableData) measure() {
@@ -221,6 +276,8 @@ func (d *tableData) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
 		c.Print(top+1, left, "no columns", kit.Dim)
 		return
 	}
+	d.col = max(0, min(d.col, len(d.header)-1)) // a cursor past the header must never reach the paint
+	d.off = min(d.off, d.col)
 	body := rows - 2
 	d.follow(body, cols)
 	last := d.visible(cols)
@@ -304,6 +361,14 @@ func (d *tableData) key(a *app, k screen.Key) {
 		a.pop()
 	case screen.KeyEnter, 'e', 'v':
 		d.editCell(a)
+	case 'y':
+		if d.row < len(d.rows) {
+			a.copyText(d.header[d.col], d.cell())
+		}
+	case 'Y':
+		if d.row < len(d.rows) {
+			a.copyText("the row", d.rowTSV())
+		}
 	case 'p':
 		err := a.page(d.cell())
 		if err != nil {
@@ -322,7 +387,7 @@ func (d *tableData) key(a *app, k screen.Key) {
 	case 'U':
 		d.run(a, "update")
 	case ':':
-		a.ask(":", d.lastCmd, d.command)
+		a.ask(":", "", d.command) // ↑ brings the last one back
 	case '?':
 		a.push(&helpView{lines: dataHelp})
 	}
@@ -348,6 +413,7 @@ func (d *tableData) orderBy(a *app, dir string) {
 		return
 	}
 	col := d.header[d.col]
+	before := slices.Clone(d.order)
 	found := false
 	for i := range d.order {
 		if d.order[i].col == col {
@@ -359,12 +425,12 @@ func (d *tableData) orderBy(a *app, dir string) {
 	}
 	err := d.reset(a)
 	if err != nil {
+		d.order = before // the rows on screen are still in the old order
 		a.fail(err)
 	}
 }
 
 func (d *tableData) command(a *app, line string) {
-	d.lastCmd = line
 	cmd := strings.TrimSpace(line)
 	switch {
 	case cmd == "":
@@ -373,19 +439,27 @@ func (d *tableData) command(a *app, line string) {
 	case (cmd == "where" || strings.HasPrefix(cmd, "where ") || cmd == "order") && d.query:
 		a.say(kit.Warn, "a view's query has its own where and order")
 	case cmd == "where" || strings.HasPrefix(cmd, "where "):
+		before := d.where
 		d.where = strings.TrimSpace(strings.TrimPrefix(cmd, "where"))
 		err := d.reset(a)
 		if err != nil {
+			d.where = before // the rows on screen are still the old filter's
 			a.fail(err)
 		}
 	case cmd == "order":
+		before := d.order
 		d.order = nil
 		err := d.reset(a)
 		if err != nil {
+			d.order = before
 			a.fail(err)
 		}
 	case cmd == "insert" || cmd == "struct" || cmd == "json" || cmd == "update":
 		d.run(a, cmd)
+	case cmd == "sql":
+		runSQL(a)
+	case strings.HasPrefix(cmd, "export"):
+		d.export(a, strings.TrimPrefix(cmd, "export"))
 	default:
 		a.say(kit.Err, "unknown command %q (?)", cmd)
 	}
@@ -423,7 +497,12 @@ func (d *tableData) run(a *app, what string) {
 	if (what != "insert" && what != "update") || !changed {
 		return
 	}
-	err = a.pg.Exec(out)
+	start := debugNow()
+	err = a.busy("running the "+what, func(ctx context.Context) error {
+		_, err := a.pg.ExecTx(ctx, out)
+		return err
+	})
+	debugEvent("exec", start, "what", what, "table", d.name, "err", err)
 	if err != nil {
 		a.fail(err)
 		return
@@ -435,15 +514,32 @@ func (d *tableData) run(a *app, what string) {
 	}
 }
 
+// rowTSV is the row under the cursor as tab-separated text, NULL empty: what
+// a spreadsheet takes on paste. Tabs and newlines inside a value become
+// spaces, or they would make cells of their own.
+func (d *tableData) rowTSV() string {
+	cells := make([]string, len(d.rows[d.row]))
+	for i, v := range d.rows[d.row] {
+		if !d.nulls[d.row][i] {
+			cells[i] = strings.NewReplacer("\t", " ", "\n", " ", "\r", " ").Replace(v)
+		}
+	}
+	return strings.Join(cells, "\t")
+}
+
 // rowValues is the row under the cursor with nil for NULL; nil when there
 // is no row.
 func (d *tableData) rowValues() []any {
 	if d.row >= len(d.rows) {
 		return nil
 	}
-	out := make([]any, len(d.rows[d.row]))
-	for i, v := range d.rows[d.row] {
-		if !d.nulls[d.row][i] {
+	return d.rowAt(d.row)
+}
+
+func (d *tableData) rowAt(r int) []any {
+	out := make([]any, len(d.rows[r]))
+	for i, v := range d.rows[r] {
+		if !d.nulls[r][i] {
 			out[i] = v
 		}
 	}
@@ -468,7 +564,12 @@ func (d *tableData) editCell(a *app) {
 		a.say(kit.Err, "read only: no primary key")
 		return
 	}
-	err = updateCell(a.pg, d.name, d.header, d.columns, d.rows[d.row], d.col, value)
+	start := debugNow()
+	row, col := d.rows[d.row], d.col
+	err = a.busy("saving "+d.header[col], func(ctx context.Context) error {
+		return updateCell(ctx, a.pg, d.name, d.header, d.columns, row, col, value)
+	})
+	debugEvent("update_cell", start, "table", d.name, "column", d.header[d.col], "err", err)
 	if err != nil {
 		a.fail(err)
 		return
@@ -517,7 +618,8 @@ func (d *tableData) reload(a *app) {
 	if err != nil {
 		a.fail(err)
 	}
-	d.row, d.col = min(row, max(0, len(d.rows)-1)), col
+	d.row, d.col = min(row, max(0, len(d.rows)-1)), min(col, max(0, len(d.header)-1))
+	d.off = min(d.off, d.col)
 }
 
 var dataHelp = []string{
@@ -525,10 +627,13 @@ var dataHelp = []string{
 	"PgUp PgDn      a page        Home End  first, last column",
 	"enter e v      edit the cell in $EDITOR (saved to the table)",
 	"p              view the cell in $PAGER",
+	"y Y            copy the cell, the row (tab-separated) to the clipboard",
 	"o O            order by this column, ascending or descending",
 	"I S J U        INSERT, Go struct, JSON of the row, UPDATE of the row",
 	":where COND    filter rows (:where alone clears)",
 	":order         clear the order",
 	":insert :struct :json :update  the same as I S J U",
+	":sql           write SQL in $EDITOR and run it (writes too)",
+	":export F.csv  every row of the filter (or .json), to a new file",
 	"esc q          back to the tables",
 }

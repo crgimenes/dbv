@@ -401,20 +401,21 @@ type ColumnInfo struct {
 }
 
 func (pg *Postgres) ListColumns(tableName string) ([]ColumnInfo, error) {
-	rel, err := pg.Resolve(tableName)
+	ctx := context.Background()
+	rel, err := pg.Resolve(ctx, tableName)
 	if err != nil {
 		return nil, err
 	}
-	return pg.relColumns(rel)
+	return pg.relColumns(ctx, rel)
 }
 
-func (pg *Postgres) relColumns(rel Rel) ([]ColumnInfo, error) {
+func (pg *Postgres) relColumns(ctx context.Context, rel Rel) ([]ColumnInfo, error) {
 	const sqlStatement = `SELECT column_name, data_type
 	FROM information_schema.columns
 	WHERE table_schema = $1 AND table_name = $2
 	ORDER BY ordinal_position;`
 	var columns []ColumnInfo
-	err := pg.DB.Select(&columns, sqlStatement, rel.Schema, rel.Name)
+	err := pg.DB.SelectContext(ctx, &columns, sqlStatement, rel.Schema, rel.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -422,6 +423,7 @@ func (pg *Postgres) relColumns(rel Rel) ([]ColumnInfo, error) {
 }
 
 func (pg *Postgres) ListRecords(
+	ctx context.Context,
 	tableName string,
 	_ string, // the primary key now comes from the catalog, quoted
 	offset int,
@@ -434,7 +436,7 @@ func (pg *Postgres) ListRecords(
 	int,
 	error,
 ) {
-	rel, err := pg.Resolve(tableName)
+	rel, err := pg.Resolve(ctx, tableName)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -443,12 +445,12 @@ func (pg *Postgres) ListRecords(
 	}
 
 	var totalRecords int
-	err = pg.Get(&totalRecords, fmt.Sprintf("SELECT COUNT(*) FROM %s %s", rel.SQL, where))
+	err = pg.DB.GetContext(ctx, &totalRecords, fmt.Sprintf("SELECT COUNT(*) FROM %s %s", rel.SQL, where))
 	if err != nil {
 		return nil, nil, 0, err
 	}
 
-	columns, err := pg.relColumns(rel)
+	columns, err := pg.relColumns(ctx, rel)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -457,7 +459,7 @@ func (pg *Postgres) ListRecords(
 		fields[i] = QuoteName(column.ColumnName)
 	}
 
-	pks, err := pg.relPrimaryKey(rel)
+	pks, err := pg.relPrimaryKey(ctx, rel)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -481,7 +483,7 @@ func (pg *Postgres) ListRecords(
 		limit,
 	)
 
-	rows, err := pg.DB.Queryx(sqlStatement)
+	rows, err := pg.DB.QueryxContext(ctx, sqlStatement)
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("error executing query: %v %v", sqlStatement, err)
 	}
@@ -524,22 +526,22 @@ func displayValue(v any, dataType string) any {
 	return fmt.Sprint(v)
 }
 
-func (pg *Postgres) GetPrimaryKeyColumns(tableName string) ([]string, error) {
-	rel, err := pg.Resolve(tableName)
+func (pg *Postgres) GetPrimaryKeyColumns(ctx context.Context, tableName string) ([]string, error) {
+	rel, err := pg.Resolve(ctx, tableName)
 	if err != nil {
 		return nil, err
 	}
-	return pg.relPrimaryKey(rel)
+	return pg.relPrimaryKey(ctx, rel)
 }
 
-func (pg *Postgres) relPrimaryKey(rel Rel) ([]string, error) {
+func (pg *Postgres) relPrimaryKey(ctx context.Context, rel Rel) ([]string, error) {
 	const query = `SELECT a.attname
 	FROM pg_index i
 	JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
 	WHERE i.indrelid = $1 AND i.indisprimary
 	ORDER BY array_position(i.indkey::int2[], a.attnum)`
 	var pkColumns []string
-	err := pg.DB.Select(&pkColumns, query, rel.OID)
+	err := pg.DB.SelectContext(ctx, &pkColumns, query, rel.OID)
 	if err != nil {
 		return nil, fmt.Errorf("primary key of %s: %w", rel.SQL, err)
 	}
@@ -565,17 +567,18 @@ func toGenericTimestamp(input string) (time.Time, error) {
 }
 
 func (pg *Postgres) UpdateDataCell(
+	ctx context.Context,
 	tableName,
 	fieldName string,
 	newValue any,
 	pkField []string,
 	pkValue []any,
 ) error {
-	rel, err := pg.Resolve(tableName)
+	rel, err := pg.Resolve(ctx, tableName)
 	if err != nil {
 		return err
 	}
-	columns, err := pg.relColumns(rel)
+	columns, err := pg.relColumns(ctx, rel)
 	if err != nil {
 		return fmt.Errorf("error fetching column types: %w", err)
 	}
@@ -629,12 +632,12 @@ func (pg *Postgres) UpdateDataCell(
 	args = append(args, newValue)
 	args = append(args, pkValue...)
 
-	tx, err := pg.DB.Begin()
+	tx, err := pg.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.Exec(sqlStatement, args...)
+	result, err := tx.ExecContext(ctx, sqlStatement, args...)
 	if err != nil {
 		return fmt.Errorf("error in update: %w", err)
 	}
@@ -662,18 +665,19 @@ func (pg *Postgres) CreateUpdateStatement(tableName string, headers []string, ro
 	if len(row) != len(headers) {
 		return "", errors.New("no row selected")
 	}
-	rel, err := pg.Resolve(tableName)
+	ctx := context.Background()
+	rel, err := pg.Resolve(ctx, tableName)
 	if err != nil {
 		return "", err
 	}
-	pks, err := pg.relPrimaryKey(rel)
+	pks, err := pg.relPrimaryKey(ctx, rel)
 	if err != nil {
 		return "", err
 	}
 	if len(pks) == 0 {
 		return "", fmt.Errorf("no primary key columns found for table %s", rel.SQL)
 	}
-	columns, err := pg.relColumns(rel)
+	columns, err := pg.relColumns(ctx, rel)
 	if err != nil {
 		return "", fmt.Errorf("error fetching column types: %w", err)
 	}

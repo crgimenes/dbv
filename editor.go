@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,7 @@ import (
 )
 
 // updateCell writes value into column col of row, found by its primary key.
-func updateCell(pg *db.Postgres, table string, header []string, columns []db.ColumnInfo, row []string, col int, value string) error {
+func updateCell(ctx context.Context, pg *db.Postgres, table string, header []string, columns []db.ColumnInfo, row []string, col int, value string) error {
 	for _, c := range columns {
 		if c.ColumnName != header[col] || !strings.Contains(strings.ToLower(c.DataType), "timestamp") {
 			continue
@@ -24,7 +25,7 @@ func updateCell(pg *db.Postgres, table string, header []string, columns []db.Col
 		value = formatted
 	}
 
-	pks, err := pg.GetPrimaryKeyColumns(table)
+	pks, err := pg.GetPrimaryKeyColumns(ctx, table)
 	if err != nil {
 		return fmt.Errorf("primary key: %w", err)
 	}
@@ -43,7 +44,7 @@ func updateCell(pg *db.Postgres, table string, header []string, columns []db.Col
 		}
 		values[i] = row[j]
 	}
-	return pg.UpdateDataCell(table, header[col], value, pks, values)
+	return pg.UpdateDataCell(ctx, table, header[col], value, pks, values)
 }
 
 func formatTimestamp(input string) (string, error) {

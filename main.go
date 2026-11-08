@@ -172,11 +172,18 @@ func main() {
 	selectMode := false
 	var files []string
 	for _, arg := range args {
-		if arg == "-s" {
+		switch arg {
+		case "-s":
 			selectMode = true
-			continue
+		case "-debug":
+			debugOut = os.Stderr
+		default:
+			files = append(files, arg)
 		}
-		files = append(files, arg)
+	}
+	if debugOut != nil && stderrIsTerminal() {
+		fmt.Fprintln(os.Stderr, "dbv: -debug writes to stderr, which is this screen; redirect it: dbv -debug 2>dbv.log")
+		os.Exit(2)
 	}
 
 	// Files named on the command line replace the default config, which is

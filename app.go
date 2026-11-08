@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/crgimenes/filo-term-go/kit"
 	"github.com/crgimenes/filo-term-go/screen"
@@ -40,7 +44,16 @@ type app struct {
 	input  kit.Input
 	onLine func(a *app, line string)
 	onEdit func(a *app, line string) // each keystroke, for a live filter
+
+	// what was entered at each prompt, oldest first; yagni: kept for the
+	// session only, a file in the state directory when someone misses it
+	sqlText string // the last :sql that ran, to edit again
+
+	history map[string][]string
+	histAt  int // len(history[prompt]) while typing a new line
 }
+
+const historyMax = 100
 
 const (
 	minW = 40
@@ -70,7 +83,52 @@ func (a *app) say(tone kit.Tone, format string, args ...any) {
 }
 
 func (a *app) fail(err error) {
+	if errors.Is(err, context.Canceled) {
+		a.say(kit.Warn, "cancelled")
+		return
+	}
 	a.say(kit.Err, "%v", err)
+}
+
+// busy runs op off the event loop so the screen stays alive: the spinner
+// turns and Esc cancels op's context. op must not touch the views; the
+// caller applies what it brought once busy returns.
+func (a *app) busy(what string, op func(ctx context.Context) error) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- op(ctx) }()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	events := a.t.Events()
+	shown := false // a step that ends within a tick never shows the spinner
+	for {
+		select {
+		case err := <-done:
+			if shown {
+				a.note = ""
+			}
+			return err
+		case <-tick.C:
+			kit.Spin++
+			if !shown {
+				a.say(kit.Wait, "%s · esc cancels", what)
+				shown = true
+			}
+		case ev, ok := <-events:
+			if !ok {
+				events = nil // the terminal is gone; op still has to finish
+				cancel()
+				continue
+			}
+			if ev.Key == screen.KeyEsc {
+				cancel()
+				a.say(kit.Wait, "cancelling %s", what)
+				shown = true
+			}
+		}
+		a.paint()
+	}
 }
 
 // ask opens the command line with prompt and value; done gets the line on
@@ -82,6 +140,42 @@ func (a *app) ask(prompt, value string, done func(a *app, line string)) {
 	a.onLine = done
 	a.onEdit = nil
 	a.note = ""
+	a.histAt = len(a.history[a.histKey()])
+}
+
+// histKey keeps each screen's lines apart: a table list's :rename is no
+// use at a grid's ":".
+func (a *app) histKey() string {
+	return fmt.Sprintf("%T%s", a.top(), a.prompt)
+}
+
+func (a *app) remember(line string) {
+	if a.history == nil {
+		a.history = map[string][]string{}
+	}
+	h := a.history[a.histKey()]
+	if line == "" || (len(h) > 0 && h[len(h)-1] == line) {
+		return
+	}
+	h = append(h, line)
+	if len(h) > historyMax {
+		h = h[len(h)-historyMax:]
+	}
+	a.history[a.histKey()] = h
+}
+
+// recall walks the prompt's history; past the newest the line is empty.
+func (a *app) recall(d int) {
+	h := a.history[a.histKey()]
+	a.histAt = max(0, min(len(h), a.histAt+d))
+	line := ""
+	if a.histAt < len(h) {
+		line = h[a.histAt]
+	}
+	a.input.Set(line)
+	if a.onEdit != nil {
+		a.onEdit(a, line)
+	}
 }
 
 func (a *app) asking() bool { return a.onLine != nil }
@@ -91,16 +185,30 @@ func (a *app) closeLine() {
 }
 
 func (a *app) run() error {
+	a.paint()
 	for !a.quit {
-		a.paint()
 		ev, ok := <-a.t.Events()
 		if !ok {
 			return nil // the terminal went away
 		}
 		if ev.Resize {
+			a.paint()
 			continue
 		}
+		start := debugNow()
+		view := ""
+		if debugOut != nil {
+			view = fmt.Sprintf("%T", a.top()) // before the key: it may close the last view
+		}
 		a.handle(ev.Key)
+		painted := debugNow()
+		if !a.quit {
+			a.paint()
+		}
+		if debugOut != nil {
+			debugEvent("key", start, "key", fmt.Sprintf("%#x", ev.Key), "view", view,
+				"paint_ms", fmt.Sprintf("%.1f", float64(time.Since(painted))/1e6))
+		}
 	}
 	return nil
 }
@@ -120,8 +228,13 @@ func (a *app) handle(k screen.Key) {
 		}
 	case screen.KeyEnter:
 		done, line := a.onLine, a.input.String()
+		a.remember(line)
 		a.closeLine()
 		done(a, line)
+	case screen.KeyUp:
+		a.recall(-1)
+	case screen.KeyDown:
+		a.recall(1)
 	default:
 		a.input.Key(k)
 		if a.onEdit != nil {
@@ -225,7 +338,9 @@ func (a *app) page(text string) error {
 func (a *app) connect(cfg db.DBConfig) error {
 	a.say(kit.Wait, "connecting to %s", cfg.Title)
 	a.paint()
+	start := debugNow()
 	pg, err := db.New(cfg.URL)
+	debugEvent("connect", start, "title", cfg.Title, "err", err)
 	if err != nil {
 		return fmt.Errorf("connect %q: %w", cfg.Title, err)
 	}
@@ -327,4 +442,25 @@ func (m *dbMenu) key(a *app, k screen.Key) {
 		return
 	}
 	a.push(m.next(a))
+}
+
+// clipMax is about what xterm and most emulators take in one OSC 52.
+const clipMax = 74 * 1024
+
+// copyText puts text on the clipboard of the terminal itself (OSC 52), so it
+// works over ssh with no clipboard program. tmux passes it on with
+// "set -g set-clipboard on".
+//
+// OSC 52: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
+func (a *app) copyText(what, text string) {
+	if len(text) > clipMax {
+		a.say(kit.Warn, "%s is %d bytes, more than a terminal takes; not copied", what, len(text))
+		return
+	}
+	_, err := fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\x07", base64.StdEncoding.EncodeToString([]byte(text)))
+	if err != nil {
+		a.fail(err)
+		return
+	}
+	a.say(kit.OK, "%s copied", what)
 }

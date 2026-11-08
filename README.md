@@ -11,7 +11,8 @@
 - **Cell Editing**: Edit cell values directly with automatic conversions for timestamps and numeric types.
 - **Insert Statement Generation**: Create template SQL INSERT statements that include default values and respect primary key order.
 - **Go Struct Generation**: Generate Go struct definitions based on table columns (mapping PostgreSQL types to Go types).
-- **JSON Export**: Convert table rows into JSON structures.
+- **SQL**: `:sql` writes SQL in `$EDITOR` and runs it, several statements in one transaction (a `BEGIN` left open is rolled back); rows that come back show as a grid. Text left unchanged runs nothing.
+- **Export**: `:export FILE.csv` or `FILE.json` writes every row of the current filter; `y`/`Y` copy a cell or a row to the clipboard.
 - **User Views**: `.sql` files in a views directory appear in the table list; `{{name:type:title:order}}` tokens become a form to fill in before the query runs (read only).
 - **SSH Tunnel**: `ssh+postgres://` URLs reach a database through ssh, reading `~/.ssh/config`.
 - **Command Line for Scripts and Agents**: one-shot, read-only commands with text or JSON output.
@@ -94,15 +95,17 @@ dbv
 
 - **Table Listing & Filtering**: Easily navigate and filter available tables.
 - **Data Viewing & Editing**: Scroll through records, edit cells, and generate SQL/struct/JSON using quick commands.
-- **Commands**: `:where COND`, `:order`, `:insert`, `:struct`, `:json` and `:update` on a table; `:clear`, `:reload`, `:rename` and `:quit` on the table list.
+- **Commands**: `:where COND`, `:order`, `:insert`, `:struct`, `:json`, `:update` and `:export FILE` on a table; `:clear`, `:reload`, `:rename` and `:quit` on the table list; `:sql` on both. `↑↓` on the command line bring back what was typed on that screen.
+- **Long queries**: a spinner shows after a tenth of a second, and `Esc` cancels the query on the server.
 - **Selector mode**: `dbv -s` picks a table or column name (Space), a Go struct (`S`) or an INSERT (`I`) and writes it to `/tmp/dbv_output.txt`, for an editor running beside dbv to insert.
 
 ### Command line (scripts and agents)
 
 `dbv COMMAND [flags] [args]` answers once and exits, without the
-interactive interface. No command writes: `rows` and `query` run a single
-statement inside a `READ ONLY` transaction, and the others read the catalog
-with fixed queries.
+interactive interface. The reading commands never write: `rows` and
+`query` run a single statement inside a `READ ONLY` transaction, and the
+others read the catalog with fixed queries. `exec` and `update` change data
+and refuse to run without `-write`.
 
 ```bash
 dbv dbs                                   # configured connections
@@ -113,11 +116,32 @@ dbv query -db 1 -json 'SELECT id, name FROM users LIMIT 5'
 echo 'SELECT now()' | dbv query -db 1
 dbv struct -db 1 users                    # Go struct
 dbv insert -db 1 users                    # INSERT template
+dbv exec -db 1 -write 'DELETE FROM sessions WHERE expires < now()'
+dbv update -db 1 -write -key id=7 users name 'Ana Maria'
+dbv tables -config ./test.filo            # another config file
 ```
+
+`update` sets one cell and changes nothing unless `-key` names the whole
+primary key and matches exactly one row; `exec` runs everything in one
+transaction, so a failing statement takes the earlier ones back, and it
+refuses SQL that opens or ends a transaction of its own (BEGIN, COMMIT,
+ROLLBACK), which would break that promise.
 
 Text output is `;`-separated with a header line; `-json` gives
 `{"columns":[...],"rows":[[...]],"truncated":bool}`. `dbv -h` lists every
 flag. An agent skill lives in [skills/dbv/SKILL.md](skills/dbv/SKILL.md).
+
+### Diagnostics
+
+`-debug` writes one line per step to stderr, `dbv event: OP ms=N key=value
+...` (connect, load, query, view, update_cell, exec, and in the interface
+each key with the time it took to handle and to paint). The interface owns
+the terminal, so redirect it there:
+
+```bash
+dbv -debug 2>dbv.log          # and `tail -f dbv.log` in another window
+dbv rows -debug -limit 5 users
+```
 
 ### Interface
 
@@ -133,6 +157,7 @@ Table list:
 - `↑↓` / `j k`, `PgUp PgDn`, `Home End`: move
 - `Enter`: open the table or view
 - `/`: filter by regular expression, live (`Esc` clears)
+- `y`: copy the table name to the clipboard
 - `:`: command line; `?`: help
 - `Esc`: back to the database menu; `q`: quit
 
@@ -141,6 +166,7 @@ Table data:
 - `↑↓←→` / `h j k l`, `PgUp PgDn`: move; `g G`: first and last row; `Home End`: first and last column
 - `Enter`, `e`, `v`: edit the cell in `$EDITOR` (saved to the table; needs a primary key)
 - `p`: view the cell in `$PAGER`
+- `y`, `Y`: copy the cell, or the row as tab-separated text, to the clipboard (through the terminal, OSC 52; works over ssh, and in tmux with `set -g set-clipboard on`)
 - `o`, `O`: order by this column, ascending or descending
 - `I`, `S`, `J`, `U`: INSERT template, Go struct, JSON of the row, UPDATE of the row (INSERT and UPDATE run when saved changed)
 - `:`: command line; `?`: help

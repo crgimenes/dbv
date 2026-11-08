@@ -155,6 +155,10 @@ func (l *tableList) key(a *app, k screen.Key) {
 		a.ask(":", "", l.command)
 	case '?':
 		a.push(&helpView{lines: listHelp})
+	case 'y':
+		if len(l.shown) > 0 {
+			a.copyText("the name", l.shown[l.table.Cursor].Name)
+		}
 	case screen.KeyEnter:
 		l.open(a)
 	}
@@ -190,6 +194,8 @@ func (l *tableList) command(a *app, line string) {
 		a.push(&helpView{lines: listHelp})
 	case "reload":
 		l.reload(a)
+	case "sql":
+		runSQL(a)
 	case "rename":
 		if len(l.shown) == 0 {
 			a.say(kit.Warn, "no table selected")
@@ -220,10 +226,12 @@ var listHelp = []string{
 	"PgUp PgDn     a page",
 	"enter         open the table or view",
 	"/             filter by regular expression, live; esc clears",
+	"y             copy the table name to the clipboard",
 	":q :quit      quit",
 	":clear        clear the filter",
 	":reload       read the table list again",
 	":rename       rename the table under the cursor",
+	":sql          write SQL in $EDITOR and run it (writes too)",
 	"esc           back (to the database menu)",
 }
 

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
@@ -14,7 +15,8 @@ type ColumnInfoEx struct {
 }
 
 func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
-	rel, err := pg.Resolve(tableName)
+	ctx := context.Background()
+	rel, err := pg.Resolve(ctx, tableName)
 	if err != nil {
 		return "", err
 	}
@@ -29,7 +31,7 @@ func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
         ORDER BY column_name;  -- initially ordered alphabetically
     `
 	var cols []ColumnInfoEx
-	if err := pg.DB.Select(&cols, sqlStatement, rel.Schema, rel.Name); err != nil {
+	if err := pg.DB.SelectContext(ctx, &cols, sqlStatement, rel.Schema, rel.Name); err != nil {
 		return "", fmt.Errorf("error fetching columns: %w", err)
 	}
 	if len(cols) == 0 {
@@ -37,7 +39,7 @@ func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
 	}
 
 	// Retrieve primary key column names.
-	pkColumns, err := pg.relPrimaryKey(rel)
+	pkColumns, err := pg.relPrimaryKey(ctx, rel)
 	if err != nil {
 		return "", fmt.Errorf("error fetching primary keys: %w", err)
 	}

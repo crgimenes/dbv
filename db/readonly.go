@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
@@ -81,4 +82,30 @@ func plain(v any, dataType string) any {
 		return x.Format(time.RFC3339Nano)
 	}
 	return v
+}
+
+// ExecTx runs sqlText, which may hold several statements, in one
+// transaction: all of it commits or none does. It returns the rows the last
+// statement affected.
+func (pg *Postgres) ExecTx(ctx context.Context, sqlText string) (int64, error) {
+	w := txControl(sqlText)
+	if w != "" {
+		// a COMMIT inside would end this transaction, and what follows it
+		// would no longer be undone with the rest
+		return 0, fmt.Errorf("%s inside the SQL: it already runs as one transaction", w)
+	}
+	tx, err := pg.DB.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, sqlText)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
 }
