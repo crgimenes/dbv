@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/crgimenes/filo v0.1.1
-	github.com/crgimenes/filo-term-go v0.0.1
+	github.com/crgimenes/filo-term-go v0.0.2
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/kevinburke/ssh_config v1.6.0
