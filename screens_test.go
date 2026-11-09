@@ -112,3 +112,31 @@ func TestQuerySortSpecials(t *testing.T) {
 		t.Fatalf("%v", got)
 	}
 }
+
+func TestListKinds(t *testing.T) {
+	l := &tableList{all: []TableInfo{
+		{Name: "active", Type: queryType}, {Name: "mv", Type: "materialized view"},
+		{Name: "users", Type: "table"}, {Name: "active", Type: "view"}, {Name: "orders", Type: "table"},
+	}}
+	a := &app{views: []view{l}}
+	names := func() string {
+		var n []string
+		for _, s := range l.shown {
+			n = append(n, s.Name)
+		}
+		return strings.Join(n, ",")
+	}
+	l.apply(a, "")
+	want := []string{"users,orders", "mv,active", "active", "active,mv,users,active,orders"}
+	for _, w := range want {
+		l.nextKind(a)
+		if names() != w {
+			t.Fatalf("%s: %q, want %q", kindsShown[l.kind].name, names(), w)
+		}
+	}
+	l.nextKind(a)
+	l.apply(a, "^u")
+	if names() != "users" || l.status() != "1 of 1 · tables · /^u" {
+		t.Fatalf("%q %q", names(), l.status())
+	}
+}

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/crgimenes/filo-term-go/kit"
@@ -64,7 +66,19 @@ type tableList struct {
 	all    []TableInfo
 	shown  []TableInfo
 	filter string
+	kind   int // of kindsShown: t walks them
 	table  kit.Table
+}
+
+// kindsShown are what t walks: everything, then one kind of row at a time.
+var kindsShown = []struct {
+	name  string
+	types []string
+}{
+	{"", nil},
+	{"tables", []string{"table"}},
+	{"views", []string{"view", "materialized view"}},
+	{"queries", []string{queryType}},
 }
 
 func newTableList(a *app) view {
@@ -84,20 +98,19 @@ func (l *tableList) reload(a *app) {
 
 func (l *tableList) apply(a *app, filter string) {
 	l.filter = filter
-	l.shown = l.all
 	l.table.Cursor = 0
-	if filter == "" {
-		return
-	}
+	types := kindsShown[l.kind].types
 	re, err := regexp.Compile(filter)
 	if err != nil {
 		a.say(kit.Warn, "filter: %v", err)
-		return
+		re = nil // the kind still applies
 	}
-	a.note = "" // a complaint about a half-typed expression is over
+	if err == nil && filter != "" {
+		a.note = "" // a complaint about a half-typed expression is over
+	}
 	l.shown = nil
 	for _, t := range l.all {
-		if re.MatchString(t.Name) {
+		if (types == nil || slices.Contains(types, t.Type)) && (re == nil || re.MatchString(t.Name)) {
 			l.shown = append(l.shown, t)
 		}
 	}
@@ -109,7 +122,7 @@ func (l *tableList) title() string {
 
 func (l *tableList) hints() []kit.Hint {
 	return []kit.Hint{
-		{Key: "↑↓", What: "move"}, {Key: "enter", What: "open"}, {Key: "/", What: "filter"},
+		{Key: "↑↓", What: "move"}, {Key: "enter", What: "open"}, {Key: "/", What: "filter"}, {Key: "t", What: "kind"},
 		{Key: ":", What: "command"}, {Key: "?", What: "help"}, {Key: "q", What: "quit"},
 	}
 }
@@ -129,6 +142,9 @@ func (l *tableList) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
 
 func (l *tableList) status() string {
 	s := fmt.Sprintf("%d of %d", min(l.table.Cursor+1, len(l.shown)), len(l.shown))
+	if l.kind > 0 {
+		s += " · " + kindsShown[l.kind].name
+	}
 	if l.filter != "" {
 		s += " · /" + l.filter
 	}
@@ -144,7 +160,8 @@ func (l *tableList) key(a *app, k screen.Key) {
 	case 'q':
 		a.quit = true
 	case screen.KeyEsc:
-		if l.filter != "" {
+		if l.filter != "" || l.kind != 0 {
+			l.kind = 0
 			l.apply(a, "")
 			return
 		}
@@ -164,6 +181,8 @@ func (l *tableList) key(a *app, k screen.Key) {
 		}
 	case 'n':
 		l.newQuery(a, "")
+	case 't':
+		l.nextKind(a)
 	case 'e':
 		l.edit(a)
 	case screen.KeyEnter:
@@ -215,6 +234,12 @@ func (l *tableList) edit(a *app) {
 }
 
 var listCommands = []string{"clear", "reload", "rename", "query", "view", "table", "sql", "help", "quit"}
+
+// nextKind shows the next kind of row only, the filter kept.
+func (l *tableList) nextKind(a *app) {
+	l.kind = (l.kind + 1) % len(kindsShown)
+	l.apply(a, l.filter)
+}
 
 // newQuery asks for a name when there is none, then opens the new query.
 func (l *tableList) newQuery(a *app, name string) {
@@ -282,6 +307,7 @@ func (l *tableList) command(a *app, line string) {
 	case "q", "quit":
 		a.quit = true
 	case "clear":
+		l.kind = 0
 		l.apply(a, "")
 		a.say(kit.OK, "filter cleared")
 	case "help":
@@ -306,11 +332,12 @@ func (l *tableList) command(a *app, line string) {
 				a.say(kit.Warn, "same or empty name: nothing renamed")
 				return
 			}
-			rename := a.pg.RenameTable
-			if typ == queryType {
-				rename = renameQuery
-			}
-			err := rename(old, name)
+			err := a.busy("renaming "+old, func(ctx context.Context) error {
+				if typ == queryType {
+					return renameQuery(old, name)
+				}
+				return a.pg.Rename(ctx, old, name)
+			})
 			if err != nil {
 				a.fail(err)
 				return
@@ -347,9 +374,10 @@ var listHelp = []string{
 	"PgUp PgDn ^F ^B  a page",
 	"enter         open the table or view; a query runs (its form first)",
 	"/             filter by regular expression, live; tab completes a name",
+	"t             only tables, only views, only queries, all again",
 	"y             copy the table name to the clipboard",
 	":q :quit      quit",
-	":clear        clear the filter",
+	":clear        clear the filter and the kind",
 	":reload       read the table list again",
 	":rename       rename the table, view or query under the cursor",
 	":sql          write SQL in $EDITOR and run it (writes too)",
@@ -358,7 +386,7 @@ var listHelp = []string{
 	"e             edit what is under the cursor: a table's structure,",
 	"              a view's CREATE OR REPLACE, a query's file",
 	":table NAME   a new table, written in $EDITOR as CREATE TABLE",
-	"esc           back (to the database menu)",
+	"esc           clear the filter and the kind; then back (to the database menu)",
 	"^C ^Z ^L      quit, suspend (fg resumes), redraw",
 }
 

@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,8 +28,6 @@ import (
 var (
 	Storage   *Postgres
 	ErrNoRows = errors.New("sql: no rows in result set")
-
-	validIdent = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 type Postgres struct {
@@ -836,41 +833,4 @@ func (pg *Postgres) QuerySQL(query string) ([]map[string]any, []ColumnInfo, erro
 		records = append(records, record)
 	}
 	return records, columns, rows.Err()
-}
-
-func (pg *Postgres) RenameTable(oldName, newName string) error {
-	if !validIdent.MatchString(oldName) ||
-		!validIdent.MatchString(newName) {
-		return fmt.Errorf("invalid table name: %q or %q", oldName, newName)
-	}
-
-	query := fmt.Sprintf(
-		`ALTER TABLE "%s" RENAME TO "%s";`,
-		oldName, newName,
-	)
-
-	_, err := pg.DB.Exec(query)
-	if err != nil {
-		return fmt.Errorf("error renaming table: %w SQL: %s", err, query)
-	}
-	return nil
-}
-
-func (pg *Postgres) RenameColumn(tableName string, oldColName string, newColName string) error {
-	if !validIdent.MatchString(tableName) ||
-		!validIdent.MatchString(oldColName) ||
-		!validIdent.MatchString(newColName) {
-		return fmt.Errorf("invalid table or column name: %q, %q, %q", tableName, oldColName, newColName)
-	}
-
-	query := fmt.Sprintf(
-		`ALTER TABLE "%s" RENAME COLUMN "%s" TO "%s";`,
-		tableName, oldColName, newColName,
-	)
-
-	_, err := pg.DB.Exec(query)
-	if err != nil {
-		return fmt.Errorf("error renaming column: %w SQL: %s", err, query)
-	}
-	return nil
 }

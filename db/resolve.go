@@ -89,3 +89,18 @@ WHERE c.oid = $1 AND c.relkind = 'v'`
 	}
 	return def, nil
 }
+
+// Rename renames a table, view or materialized view; to is the new name as
+// it should read in the catalog, case and spaces kept.
+func (pg *Postgres) Rename(ctx context.Context, name, to string) error {
+	rel, err := pg.Resolve(ctx, name)
+	if err != nil {
+		return err
+	}
+	kind := map[string]string{"r": "TABLE", "p": "TABLE", "v": "VIEW", "m": "MATERIALIZED VIEW", "f": "FOREIGN TABLE"}[rel.Kind]
+	if kind == "" {
+		return fmt.Errorf("%s: not a table or a view", rel.SQL)
+	}
+	_, err = pg.RunDDL(ctx, "ALTER "+kind+" "+rel.SQL+" RENAME TO "+QuoteName(to))
+	return err
+}

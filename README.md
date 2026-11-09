@@ -160,8 +160,9 @@ Table list:
 - `Enter`: open the table or view; a query runs (its form first)
 - `e`: edit what is under the cursor: a table's structure, a view's definition, a query's file
 - `n`, `:query NAME`: a new query of yours; `:view NAME`: a new view in the database; `:table NAME`: a new table
-- `:rename`: rename the table, view or query under the cursor
+- `:rename`: rename the table, view or query under the cursor (the name as typed, case and spaces kept; `Esc` cancels while it waits for the lock, 5 s at most)
 - `/`: filter by regular expression, live (`Esc` clears)
+- `t`: only tables, only views (materialized ones too), only queries, then all again; it combines with `/`, and `Esc` clears it too
 - `y`: copy the table name to the clipboard
 - `:`: command line; `?`: help
 - `Esc`: back to the database menu; `q`: quit
