@@ -24,15 +24,21 @@ const (
 	fComment
 )
 
-// structView is a table's columns, each change an ALTER TABLE written in
-// $EDITOR.
+// structView is a table's columns, then its constraints and indexes, each
+// change an ALTER TABLE written in $EDITOR. row runs over both: past the
+// columns it is a constraint.
 type structView struct {
 	name  string
 	rel   db.Rel
 	cols  []db.Column
+	cons  []db.Constraint
 	row   int
 	field int
-	first int
+	first int // the first line shown, of lines()
+}
+
+var kinds = map[string]string{
+	"p": "primary key", "u": "unique", "f": "foreign key", "c": "check", "x": "exclusion", "i": "index",
 }
 
 func newStructView(a *app, name string) (*structView, error) {
@@ -50,10 +56,33 @@ func (s *structView) read(a *app) error {
 		if err != nil {
 			return err
 		}
-		s.rel, s.cols = rel, cols
-		s.row = max(0, min(s.row, len(cols)-1))
+		cons, err := a.pg.Constraints(ctx, rel)
+		if err != nil {
+			return err
+		}
+		s.rel, s.cols, s.cons = rel, cols, cons
+		s.row = max(0, min(s.row, s.count()-1))
 		return nil
 	})
+}
+
+func (s *structView) count() int { return len(s.cols) + len(s.cons) }
+
+// con is the constraint under the cursor, nil on a column.
+func (s *structView) con() *db.Constraint {
+	if s.row < len(s.cols) || s.row >= s.count() {
+		return nil
+	}
+	return &s.cons[s.row-len(s.cols)]
+}
+
+// line is the row's line on screen: the constraints come after a blank
+// line and their own header.
+func (s *structView) line(row int) int {
+	if row < len(s.cols) {
+		return row
+	}
+	return row + 2
 }
 
 func (s *structView) title() string { return "Structure of " + s.name + " · " + DBTitle }
@@ -66,10 +95,14 @@ func (s *structView) hints() []kit.Hint {
 }
 
 func (s *structView) status() string {
+	c := s.con()
+	if c != nil {
+		return fmt.Sprintf("%d of %d · %s", s.row-len(s.cols)+1, len(s.cons), kinds[c.Kind])
+	}
 	if len(s.cols) == 0 {
 		return "no columns"
 	}
-	return fmt.Sprintf("%d of %d · %s", s.row+1, len(s.cols), strings.ToLower(structFields[s.field]))
+	return fmt.Sprintf("column %d of %d · %s", s.row+1, len(s.cols), strings.ToLower(structFields[s.field]))
 }
 
 func (s *structView) cells(c db.Column) []string {
@@ -106,20 +139,37 @@ func (s *structView) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
 	}
 	c.Fill(top+1, left, 1, cols, '─', kit.Dim)
 	body := rows - 2
-	s.first = min(s.first, s.row)
-	if s.row >= s.first+body {
-		s.first = s.row - body + 1
+	cur := s.line(s.row)
+	s.first = min(s.first, cur)
+	if cur >= s.first+body {
+		s.first = cur - body + 1
 	}
-	for r := 0; r < body && s.first+r < len(s.cols); r++ {
-		i := s.first + r
-		at = left
-		for j, v := range s.cells(s.cols[i]) {
+	conW := []int{fc[0].Width, 12, max(1, cols-fc[0].Width-14)}
+	lines := s.line(s.count())
+	for r := 0; r < body && s.first+r < lines; r++ {
+		ln, y := s.first+r, top+2+r
+		switch {
+		case ln < len(s.cols):
+			at = left
+			for j, v := range s.cells(s.cols[ln]) {
+				pen := kit.Text
+				if ln == s.row && j == s.field {
+					pen = kit.Focus
+				}
+				c.Print(y, at, kit.Pad(kit.Cut(v, fc[j].Width), fc[j].Width), pen)
+				at += fc[j].Width + 1
+			}
+		case ln == len(s.cols)+1:
+			c.Print(y, left, kit.Pad("INDEX OR CONSTRAINT", conW[0]+1)+kit.Pad("KIND", conW[1]+1)+"DEFINITION", kit.Soft)
+		case ln > len(s.cols)+1:
+			i := ln - 2
+			k := s.cons[i-len(s.cols)]
 			pen := kit.Text
-			if i == s.row && j == s.field {
+			if i == s.row {
 				pen = kit.Focus
 			}
-			c.Print(top+2+r, at, kit.Pad(kit.Cut(v, fc[j].Width), fc[j].Width), pen)
-			at += fc[j].Width + 1
+			line := kit.Pad(kit.Cut(k.Name, conW[0]), conW[0]+1) + kit.Pad(kinds[k.Kind], conW[1]+1) + kit.Cut(k.Def, conW[2])
+			c.Print(y, left, kit.Pad(line, cols), pen)
 		}
 	}
 }
@@ -130,11 +180,11 @@ func (s *structView) key(a *app, k screen.Key) {
 	case screen.KeyUp:
 		s.row = max(0, s.row-1)
 	case screen.KeyDown:
-		s.row = max(0, min(len(s.cols)-1, s.row+1))
+		s.row = max(0, min(s.count()-1, s.row+1))
 	case screen.KeyPgUp:
 		s.row = max(0, s.row-(h-8))
 	case screen.KeyPgDn:
-		s.row = max(0, min(len(s.cols)-1, s.row+(h-8)))
+		s.row = max(0, min(s.count()-1, s.row+(h-8)))
 	case screen.KeyLeft:
 		s.field = max(0, s.field-1)
 	case screen.KeyRight:
@@ -142,10 +192,14 @@ func (s *structView) key(a *app, k screen.Key) {
 	case 'g', screen.KeyHome:
 		s.row = 0
 	case 'G', screen.KeyEnd:
-		s.row = max(0, len(s.cols)-1)
+		s.row = max(0, s.count()-1)
 	case 'e', screen.KeyEnter:
 		s.edit(a)
 	case 'a':
+		if s.con() != nil {
+			s.addCon(a)
+			return
+		}
 		s.add(a, "")
 	case 'D':
 		s.drop(a)
@@ -159,7 +213,7 @@ func (s *structView) key(a *app, k screen.Key) {
 	}
 }
 
-var structCommands = []string{"add", "reload", "sql", "quit"}
+var structCommands = []string{"add", "constraint", "reload", "sql", "quit"}
 
 func (s *structView) command(a *app, line string) {
 	cmd := strings.TrimSpace(line)
@@ -171,6 +225,8 @@ func (s *structView) command(a *app, line string) {
 		s.changed(a)
 	case cmd == "sql":
 		runSQL(a)
+	case cmd == "constraint" || cmd == "index":
+		s.addCon(a)
 	case cmd == "add" || strings.HasPrefix(cmd, "add "):
 		s.add(a, strings.TrimSpace(strings.TrimPrefix(cmd, "add")))
 	default:
@@ -179,11 +235,13 @@ func (s *structView) command(a *app, line string) {
 }
 
 var structHelp = []string{
-	"↑↓ j k        move between columns of the table",
-	"←→ h l        move between fields",
-	"e enter       edit the field under the cursor as ALTER TABLE in $EDITOR",
+	"↑↓ j k        move between columns, then indexes and constraints",
+	"←→ h l        move between a column's fields",
+	"e enter       edit the field under the cursor as ALTER TABLE in $EDITOR;",
+	"              on a constraint or index, drop and add it again, edited",
 	"a :add NAME   add a column",
-	"D             drop the column (asks before running)",
+	"a :constraint add a key, unique, foreign key, check or index (on that list)",
+	"D             drop the column, constraint or index (asks before running)",
 	"",
 	"Save and quit the editor to run the statement; quit without saving and",
 	"nothing runs. A failed statement opens again with the error on top.",
@@ -200,6 +258,11 @@ func (s *structView) alter() string { return "ALTER TABLE " + s.rel.SQL }
 
 // edit writes the statement that changes the field under the cursor.
 func (s *structView) edit(a *app) {
+	k := s.con()
+	if k != nil {
+		s.editCon(a, *k)
+		return
+	}
 	if len(s.cols) == 0 {
 		return
 	}
@@ -228,7 +291,7 @@ func (s *structView) edit(a *app) {
 			text += "-- or no default: " + s.alter() + " ALTER COLUMN " + col + " DROP DEFAULT;\n"
 		}
 	case fKey:
-		a.say(kit.Warn, "the primary key is not edited here yet (:sql)")
+		a.say(kit.Warn, "the key is its primary key constraint, in the list below the columns")
 		return
 	case fComment:
 		text = "COMMENT ON COLUMN " + s.rel.SQL + "." + col + " IS " + db.QuoteLiteral(c.Comment) + ";\n" +
@@ -249,12 +312,63 @@ func (s *structView) add(a *app, name string) {
 }
 
 func (s *structView) drop(a *app) {
+	k := s.con()
+	if k != nil {
+		s.run(a, "dropping "+k.Name, s.dropCon(*k)+";\n"+dependents(*k))
+		return
+	}
 	if len(s.cols) == 0 {
 		return
 	}
 	text := s.alter() + " DROP COLUMN " + db.QuoteName(s.cols[s.row].Name) + ";\n" +
 		"-- its data goes with it; a view that uses it fails this, unless CASCADE drops the view\n"
 	s.run(a, "dropping "+s.cols[s.row].Name, text)
+}
+
+// dropCon is the statement that drops k, without its semicolon.
+func (s *structView) dropCon(k db.Constraint) string {
+	if k.Kind == "i" {
+		return "DROP INDEX " + k.SQL
+	}
+	return s.alter() + " DROP CONSTRAINT " + db.QuoteName(k.Name)
+}
+
+func dependents(k db.Constraint) string {
+	switch k.Kind {
+	case "p", "u":
+		return "-- a foreign key that references it fails this, unless CASCADE drops the foreign key\n"
+	case "f", "c":
+		return "-- adding it back checks every row; NOT VALID skips the rows already there\n"
+	}
+	return ""
+}
+
+// editCon writes k dropped and made again, in one transaction: an edit
+// that fails leaves the old one.
+func (s *structView) editCon(a *app, k db.Constraint) {
+	text := s.dropCon(k) + ";\n" + k.Def + ";\n"
+	if k.Kind != "i" {
+		text = s.alter() + "\n    DROP CONSTRAINT " + db.QuoteName(k.Name) + ",\n    ADD CONSTRAINT " + db.QuoteName(k.Name) + " " + k.Def + ";\n"
+	}
+	s.run(a, "changing "+k.Name, text+dependents(k))
+}
+
+// addCon writes every kind of constraint as a comment, the column under the
+// cursor in each: the one uncommented runs, none runs nothing.
+func (s *structView) addCon(a *app) {
+	col := "col"
+	if s.row < len(s.cols) {
+		col = db.QuoteName(s.cols[s.row].Name)
+	}
+	t := s.rel.SQL
+	text := "-- Uncomment the one to add, and name it:\n" +
+		"-- " + s.alter() + " ADD CONSTRAINT name PRIMARY KEY (" + col + ");\n" +
+		"-- " + s.alter() + " ADD CONSTRAINT name UNIQUE (" + col + ");\n" +
+		"-- " + s.alter() + " ADD CONSTRAINT name FOREIGN KEY (" + col + ") REFERENCES other_table (id);\n" +
+		"-- " + s.alter() + " ADD CONSTRAINT name CHECK (" + col + " > 0);\n" +
+		"-- CREATE INDEX name ON " + t + " (" + col + ");\n" +
+		"-- CREATE INDEX CONCURRENTLY does not lock out writes, but runs only alone in the text\n"
+	s.run(a, "adding to "+s.name, text)
 }
 
 func (s *structView) run(a *app, what, text string) {

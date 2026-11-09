@@ -151,3 +151,40 @@ func TestDDLGivesUpOnALock(t *testing.T) {
 		t.Fatalf("%v after %v", err, time.Since(start))
 	}
 }
+
+func TestConstraints(t *testing.T) {
+	pg := testDB(t, "")
+	mustExec(t, pg, `DROP TABLE IF EXISTS dbv_ck, dbv_cp;
+		CREATE TABLE dbv_cp (id int PRIMARY KEY);
+		CREATE TABLE dbv_ck (
+			id int,
+			code text UNIQUE,
+			parent int REFERENCES dbv_cp (id),
+			n int CHECK (n > 0),
+			PRIMARY KEY (id));
+		CREATE INDEX dbv_ck_n ON dbv_ck (n) WHERE n > 10`)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rel, err := pg.Resolve(ctx, "dbv_ck")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cons, err := pg.Constraints(ctx, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(cons))
+	for i, c := range cons {
+		got[i] = c.Kind + "|" + c.Name + "|" + c.Def + "|" + c.SQL
+	}
+	want := []string{
+		"p|dbv_ck_pkey|PRIMARY KEY (id)|",
+		"u|dbv_ck_code_key|UNIQUE (code)|",
+		"f|dbv_ck_parent_fkey|FOREIGN KEY (parent) REFERENCES dbv_cp(id)|",
+		"c|dbv_ck_n_check|CHECK (n > 0)|",
+		"i|dbv_ck_n|CREATE INDEX dbv_ck_n ON public.dbv_ck USING btree (n) WHERE (n > 10)|dbv_ck_n",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got\n%s", strings.Join(got, "\n"))
+	}
+}

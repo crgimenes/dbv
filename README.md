@@ -14,7 +14,7 @@
 - **SQL**: `:sql` writes SQL in `$EDITOR` and runs it, several statements in one transaction (a `BEGIN` left open is rolled back); rows that come back show as a grid. Text left unchanged runs nothing.
 - **Export**: `:export FILE.csv` or `FILE.json` writes every row of the current filter; `y`/`Y` copy a cell or a row to the clipboard.
 - **Queries**: `.sql` files of yours in a views directory appear in the table list as `query`; `{{name:type:title:order}}` tokens become a form to fill in before the query runs (read only). "View" is only ever a view in the database.
-- **Table Structure**: `e` on a table (or `:structure` on its grid) lists its columns with type, null, default, key and comment; each change is the `ALTER TABLE` for it, written in `$EDITOR`.
+- **Table Structure**: `e` on a table (or `:structure` on its grid) lists its columns with type, null, default, key and comment, then its constraints and indexes; each change is the `ALTER TABLE` for it, written in `$EDITOR`.
 - **Database Views**: `e` on a view opens it in `$EDITOR` as `CREATE OR REPLACE VIEW`, and `:view NAME` writes a new one; what is saved runs, and an error brings the text back with the error on top.
 - **SSH Tunnel**: `ssh+postgres://` URLs reach a database through ssh, reading `~/.ssh/config`.
 - **Command Line for Scripts and Agents**: one-shot, read-only commands with text or JSON output.
@@ -189,11 +189,12 @@ Table data:
 
 Table structure (`e` on a table in the list, `:structure` on its grid):
 
-- `↑↓` / `j k` move between columns of the table, `←→` / `h l` between fields (name, type, null, default, key, comment)
+- `↑↓` / `j k` move between columns of the table, then its constraints and indexes listed below them; `←→` / `h l` between a column's fields (name, type, null, default, key, comment)
 - `e`, `Enter`: the statement that changes the field under the cursor opens in `$EDITOR`: `RENAME COLUMN`, `ALTER COLUMN … TYPE` (add `USING` where no cast is automatic), `SET`/`DROP NOT NULL`, `SET`/`DROP DEFAULT`, `COMMENT ON COLUMN`
 - `a`, `:add NAME`: `ADD COLUMN`; `D`: `DROP COLUMN`
+- On a constraint (primary key, unique, foreign key, check, exclusion) or an index: `e` opens it dropped and added again in one statement, to edit (a failure leaves the old one); `D` drops it; `a` or `:constraint` opens every kind as a commented line, the column under the cursor in each: uncomment the one to add. `CREATE INDEX CONCURRENTLY` runs when it is alone in the text
 - Save and quit the editor to run the statement, edited or not; quit without saving and nothing runs. A failed statement opens again with the error on top. Anything that drops, deletes or changes a type asks `y/N` first. The statement waits at most 5 s for its lock, so a long transaction on the table fails it instead of queueing every query behind it. The grids of the table read their columns again
-- `:table NAME` on the list writes `CREATE TABLE` with an identity key to start from; the primary key, indexes and constraints are changed through `:sql` for now
+- `:table NAME` on the list writes `CREATE TABLE` with an identity key to start from
 
 ## SQL files in Neovim
 
