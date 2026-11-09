@@ -460,7 +460,10 @@ func cmdUpdate(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) e
 		values[i] = v
 	}
 	start := debugNow()
-	err = pg.UpdateDataCell(ctx, table, column, value, pk, values)
+	_, now, err := pg.CellNow(ctx, table, column, pk, values)
+	if err == nil {
+		err = pg.UpdateDataCell(ctx, table, column, value, pk, values, now)
+	}
 	debugEvent("update_cell", start, "table", table, "column", column, "err", err)
 	if err != nil {
 		return err

@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,7 +15,29 @@ import (
 )
 
 // updateCell writes value into column col of row, found by its primary key.
-func updateCell(ctx context.Context, pg *db.Postgres, table string, header []string, columns []db.ColumnInfo, row []string, col int, value string) error {
+// rowKey is the row's primary key: its columns and their values on screen.
+func rowKey(ctx context.Context, pg *db.Postgres, table string, header, row []string) ([]string, []any, error) {
+	pks, err := pg.GetPrimaryKeyColumns(ctx, table)
+	if err != nil {
+		return nil, nil, fmt.Errorf("primary key: %w", err)
+	}
+	if len(pks) == 0 {
+		return nil, nil, errors.New("read only: no primary key")
+	}
+	values := make([]any, len(pks))
+	for i, name := range pks {
+		j := slices.Index(header, name)
+		if j < 0 {
+			return nil, nil, fmt.Errorf("primary key column %q is not on screen", name)
+		}
+		values[i] = row[j]
+	}
+	return pks, values, nil
+}
+
+// updateCell writes value to the cell at row, col while it still reads as
+// old.
+func updateCell(ctx context.Context, pg *db.Postgres, table string, header []string, columns []db.ColumnInfo, row []string, col int, value string, old sql.NullString) error {
 	for _, c := range columns {
 		if c.ColumnName != header[col] || !strings.Contains(strings.ToLower(c.DataType), "timestamp") {
 			continue
@@ -25,26 +49,11 @@ func updateCell(ctx context.Context, pg *db.Postgres, table string, header []str
 		value = formatted
 	}
 
-	pks, err := pg.GetPrimaryKeyColumns(ctx, table)
+	pks, values, err := rowKey(ctx, pg, table, header, row)
 	if err != nil {
-		return fmt.Errorf("primary key: %w", err)
+		return err
 	}
-	if len(pks) == 0 {
-		return errors.New("read only: no primary key")
-	}
-	at := make(map[string]int, len(header))
-	for i, name := range header {
-		at[name] = i
-	}
-	values := make([]any, len(pks))
-	for i, name := range pks {
-		j, ok := at[name]
-		if !ok {
-			return fmt.Errorf("primary key column %q is not on screen", name)
-		}
-		values[i] = row[j]
-	}
-	return pg.UpdateDataCell(ctx, table, header[col], value, pks, values)
+	return pg.UpdateDataCell(ctx, table, header[col], value, pks, values, old)
 }
 
 func formatTimestamp(input string) (string, error) {

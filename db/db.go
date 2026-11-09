@@ -603,6 +603,65 @@ func toGenericTimestamp(input string) (time.Time, error) {
 	return time.Parse(time.RFC3339, newInput)
 }
 
+// ErrChanged is a cell or a row that changed in the database since it was
+// read: the write that found it so wrote nothing.
+var ErrChanged = errors.New("it changed in the database since it was read: nothing written")
+
+// cellKey resolves tableName and puts its key in a WHERE whose values are
+// args from $first on; pkValue as the grid shows them.
+func (pg *Postgres) cellKey(ctx context.Context, tableName string, pkField []string, pkValue []any, first int) (Rel, map[string]string, string, []any, error) {
+	rel, err := pg.Resolve(ctx, tableName)
+	if err != nil {
+		return rel, nil, "", nil, err
+	}
+	columns, err := pg.relColumns(ctx, rel)
+	if err != nil {
+		return rel, nil, "", nil, fmt.Errorf("error fetching column types: %w", err)
+	}
+	colTypes := make(map[string]string)
+	for _, col := range columns {
+		colTypes[col.ColumnName] = col.DataType
+	}
+	where := make([]string, len(pkField))
+	args := make([]any, len(pkField))
+	for i, field := range pkField {
+		args[i] = pkValue[i]
+		s, ok := pkValue[i].(string)
+		if ok && strings.Contains(strings.ToLower(colTypes[field]), "timestamp") {
+			t, err := toGenericTimestamp(s)
+			if err != nil {
+				return rel, nil, "", nil, fmt.Errorf("error converting pk value for %s: %w", field, err)
+			}
+			args[i] = t
+		}
+		where[i] = fmt.Sprintf("%s = $%d", QuoteName(field), first+i)
+	}
+	return rel, colTypes, strings.Join(where, " AND "), args, nil
+}
+
+// CellNow reads a cell as it is now: as the grid shows it (nil is NULL),
+// and as text, what UpdateDataCell checks it still is.
+func (pg *Postgres) CellNow(ctx context.Context, tableName, fieldName string, pkField []string, pkValue []any) (any, sql.NullString, error) {
+	var text sql.NullString
+	rel, colTypes, where, args, err := pg.cellKey(ctx, tableName, pkField, pkValue, 1)
+	if err != nil {
+		return nil, text, err
+	}
+	col := QuoteName(fieldName)
+	q := "SELECT " + col + ", " + col + "::text FROM " + rel.From() + " WHERE " + where // #nosec G202 -- names quoted, values bound
+	var v any
+	err = pg.DB.QueryRowContext(ctx, q, args...).Scan(&v, &text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, text, errors.New("the row is gone: deleted, or its key changed")
+	}
+	if err != nil {
+		return nil, text, err
+	}
+	return displayValue(v, colTypes[fieldName]), text, nil
+}
+
+// UpdateDataCell writes newValue to a cell, only while it still reads as
+// old (CellNow's text): ErrChanged when someone changed it meanwhile.
 func (pg *Postgres) UpdateDataCell(
 	ctx context.Context,
 	tableName,
@@ -610,63 +669,30 @@ func (pg *Postgres) UpdateDataCell(
 	newValue any,
 	pkField []string,
 	pkValue []any,
+	old sql.NullString,
 ) error {
-	rel, err := pg.Resolve(ctx, tableName)
+	rel, colTypes, where, keyArgs, err := pg.cellKey(ctx, tableName, pkField, pkValue, 3)
 	if err != nil {
 		return err
 	}
-	columns, err := pg.relColumns(ctx, rel)
-	if err != nil {
-		return fmt.Errorf("error fetching column types: %w", err)
-	}
-	colTypes := make(map[string]string)
-	for _, col := range columns {
-		colTypes[col.ColumnName] = col.DataType
-	}
-
-	if dt, ok := colTypes[fieldName]; ok && strings.Contains(strings.ToLower(dt), "timestamp") {
-		if s, ok := newValue.(string); ok {
+	updateCast := ""
+	if dt := colTypes[fieldName]; strings.Contains(strings.ToLower(dt), "timestamp") {
+		s, ok := newValue.(string)
+		if ok {
 			t, err := toGenericTimestamp(s)
 			if err != nil {
 				return fmt.Errorf("error converting newValue timestamp: %w", err)
 			}
 			newValue = t
 		}
-	}
-
-	for i, field := range pkField {
-		if dt, ok := colTypes[field]; ok && strings.Contains(strings.ToLower(dt), "timestamp") {
-			if s, ok := pkValue[i].(string); ok {
-				t, err := toGenericTimestamp(s)
-				if err != nil {
-					return fmt.Errorf("error converting pk value for %s: %w", field, err)
-				}
-				pkValue[i] = t
-			}
-		}
-	}
-
-	updateCast := ""
-	if dt, ok := colTypes[fieldName]; ok && strings.Contains(strings.ToLower(dt), "timestamp") {
 		updateCast = "::" + dt
 	}
-
-	whereClauses := make([]string, len(pkField))
-	for i, field := range pkField {
-		whereClauses[i] = fmt.Sprintf("%s = $%d", QuoteName(field), i+2)
-	}
-
+	col := QuoteName(fieldName)
 	sqlStatement := fmt.Sprintf( // #nosec G201 -- names quoted by Resolve and QuoteName, values bound
-		"UPDATE %s SET %s = $1%s WHERE %s",
-		rel.Target(),
-		QuoteName(fieldName),
-		updateCast,
-		strings.Join(whereClauses, " AND "),
+		"UPDATE %s SET %s = $1%s WHERE %s AND %s::text IS NOT DISTINCT FROM $2",
+		rel.Target(), col, updateCast, where, col,
 	)
-
-	args := make([]any, 0, len(pkValue)+1)
-	args = append(args, newValue)
-	args = append(args, pkValue...)
+	args := append([]any{newValue, old}, keyArgs...)
 
 	tx, err := pg.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -681,7 +707,10 @@ func (pg *Postgres) UpdateDataCell(
 	if err != nil {
 		return fmt.Errorf("error getting affected rows: %w", err)
 	}
-	if rowsAffected != 1 {
+	switch {
+	case rowsAffected == 0:
+		return ErrChanged
+	case rowsAffected != 1:
 		return fmt.Errorf("the key matches %d rows, not one: nothing changed", rowsAffected)
 	}
 	return tx.Commit()
@@ -697,11 +726,13 @@ func (pg *Postgres) QueryRowContext(
 
 // CreateUpdateStatement writes an UPDATE of row (nil is NULL) for the user
 // to edit and run: every value a literal, every name quoted.
-func (pg *Postgres) CreateUpdateStatement(tableName string, headers []string, row []any) (string, error) {
+// CreateUpdateStatement is an UPDATE of the row whose key is in row, its
+// values as the database has them now, guarded by the whole row as read:
+// run after someone else changed the row, it updates nothing.
+func (pg *Postgres) CreateUpdateStatement(ctx context.Context, tableName string, headers []string, row []any) (string, error) {
 	if len(row) != len(headers) {
 		return "", errors.New("no row selected")
 	}
-	ctx := context.Background()
 	rel, err := pg.Resolve(ctx, tableName)
 	if err != nil {
 		return "", err
@@ -713,34 +744,38 @@ func (pg *Postgres) CreateUpdateStatement(tableName string, headers []string, ro
 	if len(pks) == 0 {
 		return "", fmt.Errorf("no primary key columns found for table %s", rel.SQL)
 	}
-	columns, err := pg.relColumns(ctx, rel)
-	if err != nil {
-		return "", fmt.Errorf("error fetching column types: %w", err)
+	pkVals := make([]any, len(pks))
+	for i, pk := range pks {
+		idx := slices.Index(headers, pk)
+		if idx < 0 {
+			return "", fmt.Errorf("column %s not found in headers", pk)
+		}
+		pkVals[i] = row[idx]
 	}
-	colTypes := make(map[string]string)
-	for _, col := range columns {
-		colTypes[col.ColumnName] = strings.ToLower(col.DataType)
+	_, colTypes, where, args, err := pg.cellKey(ctx, tableName, pks, pkVals, 1)
+	if err != nil {
+		return "", err
+	}
+	now, rowText, err := pg.rowNow(ctx, rel, where, args, colTypes)
+	if err != nil {
+		return "", err
 	}
 
 	var sets, wheres []string
-	for i, col := range headers {
+	for _, col := range headers {
 		if !slices.Contains(pks, col) {
-			sets = append(sets, fmt.Sprintf("    %s = %s", QuoteName(col), sqlValue(row[i], colTypes[col])))
+			sets = append(sets, fmt.Sprintf("    %s = %s", QuoteName(col), sqlValue(now[col], strings.ToLower(colTypes[col]))))
 		}
 	}
 	if len(sets) == 0 {
 		return "", errors.New("there are no columns to update")
 	}
 	for _, pk := range pks {
-		idx := slices.Index(headers, pk)
-		if idx < 0 {
-			return "", fmt.Errorf("column %s not found in headers", pk)
-		}
-		if row[idx] == nil {
+		if now[pk] == nil {
 			wheres = append(wheres, QuoteName(pk)+" IS NULL")
 			continue
 		}
-		wheres = append(wheres, QuoteName(pk)+" = "+sqlValue(row[idx], colTypes[pk]))
+		wheres = append(wheres, QuoteName(pk)+" = "+sqlValue(now[pk], strings.ToLower(colTypes[pk])))
 	}
 
 	n := 0
@@ -763,7 +798,46 @@ func (pg *Postgres) CreateUpdateStatement(tableName string, headers []string, ro
 	for i := 1; i < len(wheres); i++ {
 		wheres[i] = "  AND " + wheres[i]
 	}
-	return fmt.Sprintf("UPDATE %s\nSET\n%s\nWHERE %s\n;", rel.Target(), setBlock, number(wheres, "")), nil
+	guard := "  AND dbv_row::text = " + QuoteLiteral(rowText) +
+		"\n  -- the line above: the row as read; with it gone, a change made since is written over"
+	return fmt.Sprintf("UPDATE %s AS dbv_row\nSET\n%s\nWHERE %s\n%s\n;", rel.Target(), setBlock, number(wheres, ""), guard), nil
+}
+
+// rowNow reads the row where picks: each column as the grid shows it, and
+// the whole row as text.
+func (pg *Postgres) rowNow(ctx context.Context, rel Rel, where string, args []any, colTypes map[string]string) (map[string]any, string, error) {
+	q := "SELECT dbv_row.*, dbv_row::text FROM " + rel.From() + " AS dbv_row WHERE " + where // #nosec G202 -- names quoted, values bound
+	rows, err := pg.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = rows.Close() }()
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, "", err
+	}
+	if !rows.Next() {
+		err = rows.Err()
+		if err == nil {
+			err = errors.New("the row is gone: deleted, or its key changed")
+		}
+		return nil, "", err
+	}
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	err = rows.Scan(ptrs...)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make(map[string]any, len(cols)-1)
+	for i, c := range cols[:len(cols)-1] {
+		out[c] = displayValue(vals[i], colTypes[c])
+	}
+	text := fmt.Sprint(displayValue(vals[len(cols)-1], "text"))
+	return out, text, rows.Err()
 }
 
 // sqlValue is v as a literal for a column of dataType: numbers and booleans

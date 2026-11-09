@@ -175,7 +175,7 @@ Table data:
 
 - `↑↓←→` / `h j k l`, `PgUp PgDn`: move; `g G`: first and last row; `Home End`: first and last column
 - `Enter`, `p`: view the cell in `$PAGER`
-- `e`, `v`: edit the cell in `$EDITOR` (saved to the table; needs a primary key)
+- `e`, `v`: edit the cell in `$EDITOR` (saved to the table; needs a primary key). The editor starts from the cell as the database has it now, and the save writes only while it still is: a value another session changed meanwhile is not overwritten (dbv says so, shows the new value and puts what you typed on the clipboard)
 - `/`, `n`, `N`: search the rows read so far (regular expression), next, previous
 - `y`, `Y`: copy the cell, or the row as tab-separated text, to the clipboard (through the terminal, OSC 52; works over ssh, and in tmux with `set -g set-clipboard on`)
 - `o`, `O`: order by this column, ascending or descending; the same key again drops that column from the order (the others stay), the other key flips its direction
@@ -185,7 +185,7 @@ Table data:
 - `:view NAME`, on the table list or a grid (starting from its SELECT): a new view in the database, written in `$EDITOR` as `CREATE VIEW` and run when saved. `e` on a view opens `CREATE OR REPLACE VIEW` with its options and its SELECT as the server prints it: columns can be added at the end; to drop or rename one, start the text with `DROP VIEW`. A failed statement opens again with the error on top, under the `-- dbv: db=` line; quitting without saving runs nothing. `e` on a materialized view, which has no `OR REPLACE`, opens the statements that make it again: `DROP`, `CREATE … WITH DATA` (or `NO DATA`, as it was), its indexes, comment, grants and owner, all in one transaction, asking `y/N` for the drop. A view or materialized view changed in the database while it was open in the editor is not replaced: the run fails with a note to open it again
 - `:structure`: the table's columns (below)
 - `x`: hide this column (`:show` brings them all back); `:sql` on a table starts as the grid's SELECT: its shown columns, `:where` and order
-- `I`, `S`, `J`, `U`: INSERT template, Go struct, JSON of the row, UPDATE of the row (INSERT and UPDATE run when saved changed)
+- `I`, `S`, `J`, `U`: INSERT template, Go struct, JSON of the row, UPDATE of the row (INSERT and UPDATE run when saved changed). `U` starts from the row as the database has it and ends with `AND dbv_row::text = '…'`, the whole row as read: if the row changed since, it updates nothing (`UPDATE 0`); delete that line to write over it
 - `:`: command line; `?`: help
 - `Esc`, `q`, `:q`: back to the table list
 

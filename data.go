@@ -3,6 +3,8 @@ package main
 import (
 	"cmp"
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"math/big"
 	"regexp"
@@ -875,7 +877,11 @@ func (d *tableData) run(a *app, what string) {
 			a.say(kit.Err, "no primary key: update not allowed")
 			return
 		}
-		text, err = a.pg.CreateUpdateStatement(d.name, d.header, d.rowValues())
+		err = a.busy("reading the row", func(ctx context.Context) error {
+			var err error
+			text, err = a.pg.CreateUpdateStatement(ctx, d.name, d.header, d.rowValues())
+			return err
+		})
 	}
 	if err != nil {
 		a.fail(err)
@@ -891,8 +897,10 @@ func (d *tableData) run(a *app, what string) {
 		return
 	}
 	start := debugNow()
+	var n int64
 	err = a.busy("running the "+what, func(ctx context.Context) error {
-		_, err := a.pg.ExecTx(ctx, out)
+		var err error
+		n, err = a.pg.ExecTx(ctx, out)
 		return err
 	})
 	debugEvent("exec", start, "what", what, "table", d.name, "err", err)
@@ -901,6 +909,9 @@ func (d *tableData) run(a *app, what string) {
 		return
 	}
 	a.say(kit.OK, "%s done", what)
+	if what == "update" && n == 0 {
+		a.say(kit.Warn, "UPDATE 0: the row changed since it was read, or is gone; nothing written")
+	}
 	err = d.reset(a)
 	if err != nil {
 		a.fail(err)
@@ -951,6 +962,25 @@ func (d *tableData) editCell(a *app) {
 		a.say(kit.Warn, "%s: nothing to save a cell to; p views it", why)
 		return
 	}
+	// the editor starts from the cell as it is now, and the save checks it
+	// still is: another session's change is neither hidden nor overwritten
+	row, col, at := d.rows[d.row], d.col, d.row
+	name := d.header[col]
+	var now any
+	var token sql.NullString
+	err := a.busy("reading "+name, func(ctx context.Context) error {
+		pks, values, err := rowKey(ctx, a.pg, d.name, d.header, row)
+		if err != nil {
+			return err
+		}
+		now, token, err = a.pg.CellNow(ctx, d.name, name, pks, values)
+		return err
+	})
+	if err != nil {
+		a.fail(err)
+		return
+	}
+	stale := d.setCell(at, col, now)
 	old := d.cell()
 	raw, err := a.edit(old)
 	if err != nil {
@@ -959,14 +989,22 @@ func (d *tableData) editCell(a *app) {
 	}
 	value, changed := edited(old, raw)
 	if !changed {
+		if stale {
+			a.say(kit.Warn, "%s had changed in the database; the grid shows it now", name)
+		}
 		return
 	}
 	start := debugNow()
-	row, col := d.rows[d.row], d.col
-	err = a.busy("saving "+d.header[col], func(ctx context.Context) error {
-		return updateCell(ctx, a.pg, d.name, d.header, d.columns, row, col, value)
+	err = a.busy("saving "+name, func(ctx context.Context) error {
+		return updateCell(ctx, a.pg, d.name, d.header, d.columns, row, col, value, token)
 	})
-	debugEvent("update_cell", start, "table", d.name, "column", d.header[d.col], "err", err)
+	debugEvent("update_cell", start, "table", d.name, "column", name, "err", err)
+	if errors.Is(err, db.ErrChanged) {
+		d.refreshCell(a, at, col)
+		a.copyText("what you typed", value)
+		a.say(kit.Warn, "%s changed meanwhile in the database: not saved; your text is on the clipboard", name)
+		return
+	}
 	if err != nil {
 		a.fail(err)
 		return
@@ -987,6 +1025,37 @@ func edited(old, raw string) (string, bool) {
 	}
 	value := strings.TrimRight(raw, "\r\n")
 	return value + old[len(strings.TrimRight(old, "\r\n")):], true
+}
+
+// setCell puts v (nil is NULL) in the cell, saying whether it was not
+// already there.
+func (d *tableData) setCell(row, col int, v any) bool {
+	s, null := "", v == nil
+	if !null {
+		s = fmt.Sprint(v)
+	}
+	if d.rows[row][col] == s && d.nulls[row][col] == null {
+		return false
+	}
+	d.rows[row][col], d.nulls[row][col] = s, null
+	d.measure()
+	return true
+}
+
+// refreshCell reads one cell again.
+func (d *tableData) refreshCell(a *app, row, col int) {
+	var now any
+	err := a.busy("reading "+d.header[col], func(ctx context.Context) error {
+		pks, values, err := rowKey(ctx, a.pg, d.name, d.header, d.rows[row])
+		if err != nil {
+			return err
+		}
+		now, _, err = a.pg.CellNow(ctx, d.name, d.header[col], pks, values)
+		return err
+	})
+	if err == nil {
+		d.setCell(row, col, now)
+	}
 }
 
 // ordersBy says the rows are ordered by col, so an edit of it moves its row

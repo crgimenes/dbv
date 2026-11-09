@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,7 +143,7 @@ INSERT INTO dbv_parent VALUES (1, 'p'); INSERT INTO dbv_child VALUES (1, 'c');`)
 		t.Fatalf("keys must keep their digits: %v %v", recs[0]["Price"], recs[1]["Price"])
 	}
 
-	err = pg.UpdateDataCell(context.Background(), "Order Items", "note", "changed", []string{"Price"}, []any{"1.234"})
+	err = updateNow(context.Background(), pg, "Order Items", "note", "changed", []string{"Price"}, []any{"1.234"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,8 @@ INSERT INTO dbv_parent VALUES (1, 'p'); INSERT INTO dbv_child VALUES (1, 'c');`)
 		t.Fatalf("the other row changed: %q %v", note, err)
 	}
 
-	stmt, err := pg.CreateUpdateStatement("Order Items", []string{"Price", "a\"b", "note"}, []any{"1.234", nil, "O'Brien"})
+	mustExec(t, pg, `UPDATE "Order Items" SET note = 'O''Brien', "a""b" = NULL WHERE "Price" = 1.234`)
+	stmt, err := pg.CreateUpdateStatement(context.Background(), "Order Items", []string{"Price", "a\"b", "note"}, []any{"1.234", "stale", "stale"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,12 +163,12 @@ INSERT INTO dbv_parent VALUES (1, 'p'); INSERT INTO dbv_child VALUES (1, 'c');`)
 	}
 	mustExec(t, pg, stmt)
 
-	stmt, err = pg.CreateUpdateStatement("Order Items", []string{"Price", "a\"b", "note"}, []any{"1.23", "y", "null"})
+	stmt, err = pg.CreateUpdateStatement(context.Background(), "Order Items", []string{"Price", "a\"b", "note"}, []any{"1.23", "y", "stale"})
 	if err != nil || !strings.Contains(stmt, `"note" = E'null'`) {
 		t.Fatalf("text 'null' must stay text:\n%s %v", stmt, err)
 	}
 
-	err = pg.UpdateDataCell(context.Background(), "dbv_parent", "v", "z", []string{"id"}, []any{"1"})
+	err = updateNow(context.Background(), pg, "dbv_parent", "v", "z", []string{"id"}, []any{"1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +191,7 @@ INSERT INTO dbv_parent VALUES (1, 'p'); INSERT INTO dbv_child VALUES (1, 'c');`)
 func TestPKLastColumn(t *testing.T) {
 	pg := testDB(t, "")
 	mustExec(t, pg, `DROP TABLE IF EXISTS dbv_last; CREATE TABLE dbv_last (name text, id int PRIMARY KEY); INSERT INTO dbv_last VALUES ('n', 7)`)
-	stmt, err := pg.CreateUpdateStatement("dbv_last", []string{"name", "id"}, []any{"m", "7"})
+	stmt, err := pg.CreateUpdateStatement(context.Background(), "dbv_last", []string{"name", "id"}, []any{"m", "7"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,15 +220,28 @@ INSERT INTO dbv_pp VALUES (5, 'p');`)
 	if err != nil || total != 1 || len(recs) != 1 {
 		t.Fatalf("partitioned rows: %v %d %v", recs, total, err)
 	}
-	err = pg.UpdateDataCell(ctx, "dbv_pp", "v", "edited", []string{"id"}, []any{"5"})
+	err = updateNow(ctx, pg, "dbv_pp", "v", "edited", []string{"id"}, []any{"5"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	stmt, err := pg.CreateUpdateStatement("dbv_pp", []string{"id", "v"}, []any{"5", "again"})
-	if err != nil || strings.Contains(stmt, "ONLY") {
+	stmt, err := pg.CreateUpdateStatement(ctx, "dbv_pp", []string{"id", "v"}, []any{"5", "stale"})
+	if err != nil || strings.Contains(stmt, "ONLY") || !strings.Contains(stmt, `"v" = E'edited'`) {
 		t.Fatalf("partitioned update:\n%s %v", stmt, err)
 	}
-	mustExec(t, pg, stmt)
+	n, err := pg.ExecTx(ctx, strings.Replace(stmt, "E'edited'", "E'again'", 1))
+	if err != nil || n != 1 {
+		t.Fatalf("%d %v\n%s", n, err, stmt)
+	}
+	stmt, err = pg.CreateUpdateStatement(ctx, "dbv_pp", []string{"id", "v"}, []any{"5", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, pg, `UPDATE dbv_pp SET v = 'someone else' WHERE id = 5`)
+	n, err = pg.ExecTx(ctx, strings.Replace(stmt, "E'again'", "E'mine'", 1))
+	if err != nil || n != 0 {
+		t.Fatalf("a row changed since was written over: %d %v", n, err)
+	}
+	mustExec(t, pg, `UPDATE dbv_pp SET v = 'again' WHERE id = 5`)
 	var v string
 	err = pg.Get(&v, `SELECT v FROM dbv_pp WHERE id = 5`)
 	if err != nil || v != "again" {
@@ -256,7 +271,7 @@ CREATE TABLE dbv_gen (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, n int,
 	if err != nil || len(pk) != 1 || pk[0] != "id" {
 		t.Fatalf("INCLUDE is no part of the key: %v %v", pk, err)
 	}
-	err = pg.UpdateDataCell(ctx, "dbv_inc", "note", "set", []string{"id"}, []any{"1"})
+	err = updateNow(ctx, pg, "dbv_inc", "note", "set", []string{"id"}, []any{"1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,5 +300,52 @@ func TestQueryNonFinite(t *testing.T) {
 	err = encodeJSON(&b, resultJSON(res))
 	if err != nil || !strings.Contains(b.String(), `["NaN","-Infinity",1.5]`) {
 		t.Fatalf("%s %v", b.String(), err)
+	}
+}
+
+// updateNow writes a cell as dbv update does: guarded by what it reads now.
+func updateNow(ctx context.Context, pg *db.Postgres, table, column string, value any, pk []string, values []any) error {
+	_, now, err := pg.CellNow(ctx, table, column, pk, values)
+	if err != nil {
+		return err
+	}
+	return pg.UpdateDataCell(ctx, table, column, value, pk, values, now)
+}
+
+// A cell another session changed after it was read is not overwritten,
+// json (no = operator) and NULL included.
+func TestCellChangedMeanwhile(t *testing.T) {
+	pg := testDB(t, "")
+	mustExec(t, pg, `DROP TABLE IF EXISTS dbv_cc;
+		CREATE TABLE dbv_cc (id int PRIMARY KEY, doc json, n int, at timestamptz);
+		INSERT INTO dbv_cc VALUES (1, '{"a": 1}', NULL, '2026-11-09 10:00:00+00')`)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	key, vals := []string{"id"}, []any{"1"}
+	for _, c := range []struct{ col, other, mine string }{
+		{"doc", `UPDATE dbv_cc SET doc = '{"a": 2}'`, `{"a": 3}`},
+		{"n", `UPDATE dbv_cc SET n = 5`, "7"},
+		{"at", `UPDATE dbv_cc SET at = at + interval '1 second'`, "2026-11-09T12:00:00Z"},
+	} {
+		shown, old, err := pg.CellNow(ctx, "dbv_cc", c.col, key, vals)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustExec(t, pg, c.other)
+		err = pg.UpdateDataCell(ctx, "dbv_cc", c.col, c.mine, key, vals, old)
+		if !errors.Is(err, db.ErrChanged) {
+			t.Fatalf("%s (was %v): %v", c.col, shown, err)
+		}
+		_, old, err = pg.CellNow(ctx, "dbv_cc", c.col, key, vals)
+		if err == nil {
+			err = pg.UpdateDataCell(ctx, "dbv_cc", c.col, c.mine, key, vals, old)
+		}
+		if err != nil {
+			t.Fatalf("%s read again: %v", c.col, err)
+		}
+	}
+	_, _, err := pg.CellNow(ctx, "dbv_cc", "n", key, []any{"2"})
+	if err == nil || !strings.Contains(err.Error(), "row is gone") {
+		t.Fatalf("a missing row: %v", err)
 	}
 }
