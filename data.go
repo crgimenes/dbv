@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"math/big"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -508,12 +510,13 @@ func (d *tableData) sortHere() {
 	type key struct {
 		col  int
 		desc bool
+		nums []num
 	}
 	var keys []key
 	for _, o := range d.order {
 		i := slices.Index(d.header, o.col)
 		if i >= 0 {
-			keys = append(keys, key{i, o.dir == "DESC"})
+			keys = append(keys, key{i, o.dir == "DESC", numbers(b, i)})
 		}
 	}
 	perm := make([]int, len(b.rows))
@@ -522,7 +525,7 @@ func (d *tableData) sortHere() {
 	}
 	slices.SortStableFunc(perm, func(x, y int) int {
 		for _, k := range keys {
-			c := compareCells(b, x, y, k.col)
+			c := compareCells(b, x, y, k.col, k.nums)
 			if k.desc {
 				c = -c
 			}
@@ -544,8 +547,60 @@ func (d *tableData) sortHere() {
 	}
 }
 
-// compareCells compares numbers as numbers, the rest as text.
-func compareCells(b *queryRows, x, y, col int) int {
+// decimal has its exponent capped: 1e1000000000 as an exact number would
+// take the sort's memory and time.
+var decimal = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d{1,4})?$`)
+
+// numbers is column col read as exact numbers when every value in it is
+// one (bigints past 2^53 included), nil when any is not: one column sorts
+// one way, so the order is a true order.
+func numbers(b *queryRows, col int) []num {
+	out := make([]num, len(b.rows))
+	for i, r := range b.rows {
+		if b.nulls[i][col] {
+			continue
+		}
+		v := r[col]
+		switch v {
+		case "-Infinity":
+			out[i] = num{rank: -1}
+			continue
+		case "Infinity":
+			out[i] = num{rank: 1}
+			continue
+		case "NaN":
+			out[i] = num{rank: 2}
+			continue
+		}
+		if !decimal.MatchString(v) { // not "1/2" or "0x10", which Rat would take
+			return nil
+		}
+		n, ok := new(big.Rat).SetString(v)
+		if !ok {
+			return nil
+		}
+		out[i] = num{r: n}
+	}
+	return out
+}
+
+// num is an exact number or, by rank, PostgreSQL's numeric specials in
+// their order: -Infinity, the numbers, Infinity, NaN.
+type num struct {
+	rank int
+	r    *big.Rat
+}
+
+func (a num) cmp(b num) int {
+	if a.rank != 0 || b.rank != 0 {
+		return cmp.Compare(a.rank, b.rank)
+	}
+	return a.r.Cmp(b.r)
+}
+
+// compareCells compares a column's cells, NULLs last, as numbers when nums
+// has them, else as text.
+func compareCells(b *queryRows, x, y, col int, nums []num) int {
 	nx, ny := b.nulls[x][col], b.nulls[y][col]
 	switch {
 	case nx && ny:
@@ -555,13 +610,10 @@ func compareCells(b *queryRows, x, y, col int) int {
 	case ny:
 		return -1
 	}
-	sx, sy := b.rows[x][col], b.rows[y][col]
-	fx, ex := strconv.ParseFloat(sx, 64)
-	fy, ey := strconv.ParseFloat(sy, 64)
-	if ex == nil && ey == nil {
-		return cmp.Compare(fx, fy)
+	if nums != nil {
+		return nums[x].cmp(nums[y])
 	}
-	return strings.Compare(sx, sy)
+	return strings.Compare(b.rows[x][col], b.rows[y][col])
 }
 
 // toggleOrder is o and O on col: a new key goes last, the same key again
@@ -627,6 +679,8 @@ func (d *tableData) command(a *app, line string) {
 		d.hidden = nil
 	case cmd == "sql":
 		runSQL(a)
+	case cmd == "view" || strings.HasPrefix(cmd, "view "):
+		d.saveAsView(a, strings.TrimSpace(strings.TrimPrefix(cmd, "view")))
 	case strings.HasPrefix(cmd, "export"):
 		d.export(a, strings.TrimPrefix(cmd, "export"))
 	default:
@@ -634,7 +688,33 @@ func (d *tableData) command(a *app, line string) {
 	}
 }
 
-var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "export", "q"}
+var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "view", "export", "q"}
+
+// saveAsView starts a view of yours from what the grid shows: a table's
+// SELECT (shown columns, filter, order), a view's own SQL.
+func (d *tableData) saveAsView(a *app, name string) {
+	if name == "" {
+		a.say(kit.Warn, ":view NAME")
+		return
+	}
+	body := d.sql
+	if !d.query {
+		err := a.busy("reading "+d.name, func(ctx context.Context) error {
+			q, err := d.selectSQL(ctx, a.pg, d.selectList())
+			body = q
+			return err
+		})
+		if err != nil {
+			a.fail(err)
+			return
+		}
+	}
+	if body == "" {
+		a.say(kit.Warn, "a :sql result has no SQL of its own to keep; :sql shows the last one")
+		return
+	}
+	editView(a, name, strings.TrimSpace(body))
+}
 
 // completions are what Tab offers at the grid's ":": a command first, then
 // in a :where the columns and the words between them.
@@ -835,6 +915,7 @@ var dataHelp = []string{
 	":order         clear the order",
 	":insert :struct :json :update  the same as I S J U",
 	":sql           write SQL in $EDITOR and run it (writes too); starts as the grid's SELECT",
+	":view NAME     keep the grid's SELECT as a view of yours, edited first",
 	":export F.csv  every row of the filter (or .json), to a new file",
 	"esc q          back to the tables",
 }

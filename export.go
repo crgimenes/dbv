@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/crgimenes/filo-term-go/kit"
@@ -169,7 +170,10 @@ func (d *tableData) selectSQL(ctx context.Context, pg *db.Postgres, cols string)
 		keys = append(keys, d.orderSQL())
 	}
 	for _, c := range pk {
-		keys = append(keys, db.QuoteName(c))
+		ordered := slices.ContainsFunc(d.order, func(o orderBy) bool { return o.col == c })
+		if !ordered { // a key already ordered needs no tie-break
+			keys = append(keys, db.QuoteName(c))
+		}
 	}
 	q := "SELECT " + cols + "\nFROM " + rel.SQL
 	if d.where != "" {

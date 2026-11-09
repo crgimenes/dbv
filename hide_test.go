@@ -62,4 +62,14 @@ func TestGridSelect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	d.order = nil // no order of the user's: the key's, as the grid shows it
+	q, err = d.selectSQL(ctx, pg, "*")
+	if err != nil || !strings.HasSuffix(q, `ORDER BY "id"`) {
+		t.Fatalf("%v %q", err, q)
+	}
+	d.order = []orderBy{{"id", "DESC"}} // the key ordered already: no tie-break
+	q, _ = d.selectSQL(ctx, pg, "*")
+	if !strings.HasSuffix(q, `ORDER BY "id" DESC`) {
+		t.Fatalf("%q", q)
+	}
 }

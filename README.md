@@ -169,10 +169,48 @@ Table data:
 - `y`, `Y`: copy the cell, or the row as tab-separated text, to the clipboard (through the terminal, OSC 52; works over ssh, and in tmux with `set -g set-clipboard on`)
 - `o`, `O`: order by this column, ascending or descending; the same key again drops that column from the order (the others stay), the other key flips its direction
 - On a user view or a `:sql` result, `o`/`O` sort the rows in memory (NULLs as PostgreSQL puts them; `:order` restores how they came), and `:sql` starts from the view's SQL with its parameters filled
+- `n` or `:view NAME` on the table list: a new view of yours, written in `$EDITOR` and kept in the connection's views directory (the one its config names, else `views/<title>` under dbv's config directory); `:wq` keeps it, `:q!` keeps nothing. `e` edits the view under the cursor. `:view NAME` on a grid starts the view from the grid's SELECT
 - `x`: hide this column (`:show` brings them all back); `:sql` on a table starts as the grid's SELECT: its shown columns, `:where` and order
 - `I`, `S`, `J`, `U`: INSERT template, Go struct, JSON of the row, UPDATE of the row (INSERT and UPDATE run when saved changed)
 - `:`: command line; `?`: help
 - `Esc`, `q`: back to the table list
+
+## SQL files in Neovim
+
+`dbv lsp` is a language server for `.sql` files. It completes table and
+view names after `FROM`, `JOIN`, `UPDATE` and `INTO`; after `alias.` only
+the columns of the table that alias stands for (`select * from clientes cl
+where cl.` offers the columns of `clientes`, even when the `FROM` comes
+after the cursor); a schema's tables after `schema.`; and the statement's
+columns and SQL words elsewhere. Statements are cut at `;` or a blank line.
+
+The database is the one dbv is on when it opened the editor (`:sql`, `e`,
+a view); a file opened on its own may name one in the comment lines that
+open it, by title or number as in `-db`:
+
+```sql
+-- dbv: db=2
+select * from clientes cl where cl.
+```
+
+With neither, or when the database cannot be reached, it completes SQL
+words alone and says why once; a loose `.sql` never breaks. The catalog is
+read once per database, in one read-only query, in the background.
+
+With coc.nvim, in `coc-settings.json`:
+
+```json
+"languageserver": { "dbv": { "command": "dbv", "args": ["lsp"], "filetypes": ["sql"] } }
+```
+
+`K` (hover) shows a column's type or a table's columns, and `:CocCommand`
+(`dbv.reload`) reads the catalog again; a save does too, a minute after
+the last read. With Neovim's own client (0.11 or later):
+
+```lua
+vim.lsp.config('dbv', { cmd = { 'dbv', 'lsp' }, filetypes = { 'sql' } })
+vim.lsp.enable('dbv')
+```
 
 ## Examples
 

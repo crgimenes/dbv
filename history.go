@@ -42,6 +42,9 @@ func readHistory(path string) (map[string][]string, error) {
 	}
 	h := map[string][]string{}
 	err = json.Unmarshal(b, &h)
+	if h == nil {
+		h = map[string][]string{} // a file holding null
+	}
 	return h, err
 }
 
@@ -61,7 +64,9 @@ func addLine(h map[string][]string, key, line string) {
 
 // saveLine adds one line to the file as it is now, not this session's
 // copy, so two dbv open at once both keep what they were given. The file
-// is 0600: a :where holds values from the data.
+// is 0600: a :where holds values from the data. yagni: two saves in the
+// same instant can still lose one line (read, read, rename, rename); a
+// lock file when that is ever seen.
 func saveLine(path, key, line string) error {
 	h, err := readHistory(path)
 	if err != nil {

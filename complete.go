@@ -1,14 +1,13 @@
 package main
 
 import (
-	"slices"
 	"strings"
 	"unicode"
 
 	"github.com/crgimenes/filo-term-go/kit"
 	"github.com/crgimenes/filo-term-go/screen"
 
-	"github.com/crgimenes/dbv/db"
+	"github.com/crgimenes/dbv/sqlcomplete"
 )
 
 // whereWords are what joins and compares column names in a :where.
@@ -18,25 +17,8 @@ var whereWords = []string{
 	"LOWER", "UPPER", "COALESCE", "NOW", "CURRENT_DATE",
 }
 
-// reserved names a bare column cannot take; the common ones, not the list.
-var reserved = []string{
-	"all", "and", "any", "asc", "check", "column", "default", "desc", "end",
-	"false", "from", "group", "in", "is", "limit", "not", "null", "offset",
-	"or", "order", "select", "table", "to", "true", "user", "where",
-}
-
-// sqlName is name as a WHERE can say it: bare when it can be, quoted when
-// case, a space or a keyword would change what it means.
-func sqlName(name string) string {
-	plain := name != "" && !unicode.IsDigit(rune(name[0])) && !slices.Contains(reserved, name)
-	for _, r := range name {
-		plain = plain && (r == '_' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
-	}
-	if plain {
-		return name
-	}
-	return db.QuoteName(name)
-}
+// sqlName is name as a WHERE can say it, quoted only when it must be.
+func sqlName(name string) string { return sqlcomplete.Name(name) }
 
 // completion is what Tab may put in a line: names as they are written
 // there (quoted or not, the caller's call), then words (keywords, written

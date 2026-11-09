@@ -39,6 +39,9 @@ others read the catalog with fixed queries):
   struct TABLE        Go struct for a table
   insert TABLE        INSERT template for a table (not executed)
 
+Editor:
+  lsp                 language server for .sql files (dbv lsp -h)
+
 Writing (refused without -write):
   exec [SQL | -]      run SQL, all of it in one transaction
   update TABLE COLUMN VALUE

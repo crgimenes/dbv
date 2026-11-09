@@ -161,6 +161,14 @@ func (l *tableList) key(a *app, k screen.Key) {
 		if len(l.shown) > 0 {
 			a.copyText("the name", l.shown[l.table.Cursor].Name)
 		}
+	case 'n':
+		l.newView(a, "")
+	case 'e':
+		if len(l.shown) == 0 || l.shown[l.table.Cursor].Type != userViewType {
+			a.say(kit.Warn, "e edits a view of yours; n makes one")
+			return
+		}
+		l.saved(a, l.shown[l.table.Cursor].Name, editView(a, l.shown[l.table.Cursor].Name, ""))
 	case screen.KeyEnter:
 		l.open(a)
 	}
@@ -183,7 +191,32 @@ func (l *tableList) open(a *app) {
 	a.push(v)
 }
 
-var listCommands = []string{"clear", "reload", "rename", "sql", "help", "quit"}
+var listCommands = []string{"clear", "reload", "rename", "view", "sql", "help", "quit"}
+
+// newView asks for a name when there is none, then opens the new view.
+func (l *tableList) newView(a *app, name string) {
+	if name != "" {
+		l.saved(a, name, editView(a, name, ""))
+		return
+	}
+	a.ask("new view: ", "", func(a *app, name string) {
+		if strings.TrimSpace(name) != "" {
+			l.saved(a, name, editView(a, name, ""))
+		}
+	})
+}
+
+// saved reads the list again after a view was written, the cursor on it.
+func (l *tableList) saved(a *app, name string, ok bool) {
+	if !ok {
+		return
+	}
+	note, tone := a.note, a.tone
+	l.reload(a)
+	name, _ = viewName(name)
+	l.table.Cursor = indexOfTable(l.shown, name, l.table.Cursor)
+	a.note, a.tone = note, tone // the reload must not eat "view saved"
+}
 
 // tableNames is Tab in a / filter: the names as they are, nothing after,
 // for the filter to narrow to as the menu walks them.
@@ -220,6 +253,8 @@ func (l *tableList) command(a *app, line string) {
 		l.reload(a)
 	case "sql":
 		runSQL(a)
+	case "view":
+		l.newView(a, "")
 	case "rename":
 		if len(l.shown) == 0 {
 			a.say(kit.Warn, "no table selected")
@@ -241,6 +276,11 @@ func (l *tableList) command(a *app, line string) {
 			a.say(kit.OK, "%s renamed to %s", old, name)
 		})
 	default:
+		name, ok := strings.CutPrefix(cmd, "view ")
+		if ok {
+			l.newView(a, name)
+			return
+		}
 		a.say(kit.Err, "unknown command %q (:help)", cmd)
 	}
 }
@@ -256,6 +296,8 @@ var listHelp = []string{
 	":reload       read the table list again",
 	":rename       rename the table under the cursor",
 	":sql          write SQL in $EDITOR and run it (writes too)",
+	"n :view NAME  a new view of yours, written in $EDITOR",
+	"e             edit the view of yours under the cursor",
 	"esc           back (to the database menu)",
 }
 

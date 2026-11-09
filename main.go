@@ -17,6 +17,10 @@ var (
 	GitTag       = "v0.0.0"
 	DBTitle      = "-"
 	userViewsDir string
+	// configFiles are the configs the TUI read, for the editor it opens to
+	// hand to dbv lsp: the same connection, by title
+	configFiles []string
+	dbNumber    int // DBTitle's place in configFiles' connections, from 1
 )
 
 func fileExists(name string) bool {
@@ -43,10 +47,11 @@ func getInitFiloPath() string {
 
 func configPath() string {
 	p := getInitFiloPath()
-	if fileExists(p) {
+	_, err := os.Stat(p) // #nosec G703 -- dbv's own config path
+	if err == nil {
 		return p
 	}
-	return "./init.filo"
+	return "./init.filo" // also when the directory cannot be read: the server reading this must not panic
 }
 
 func maskDBURL(dbURL string) (string, error) {
@@ -75,6 +80,16 @@ func maskDBURL(dbURL string) (string, error) {
 // registered builtin (database url [title] [views]); url is required, title
 // defaults to the masked url when empty, and views is an optional directory.
 func loadDBConfigs(name string) []db.DBConfig {
+	configs, err := readDBConfigs(name)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return configs
+}
+
+// readDBConfigs is loadDBConfigs for a caller that must not exit on a bad
+// file: the language server, which a loose .sql can start.
+func readDBConfigs(name string) ([]db.DBConfig, error) {
 	f := filo.New()
 	defer f.Close()
 
@@ -139,21 +154,21 @@ func loadDBConfigs(name string) []db.DBConfig {
 		return filo.VBool(true), nil
 	})
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	// Read the Filo file.
 	b, err := os.ReadFile(filepath.Clean(name)) // #nosec G703 -- the config file the user chose
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	// Execute the Filo code that should register the databases.
-	if err := f.DoString(string(b)); err != nil {
-		log.Fatal(err)
+	err = f.DoString(string(b))
+	if err != nil {
+		return nil, err
 	}
-
-	return configs
+	return configs, nil
 }
 
 func main() {
@@ -161,6 +176,9 @@ func main() {
 	if len(args) > 0 && isHelp(args[0]) {
 		fmt.Print(usage)
 		return
+	}
+	if len(args) > 0 && args[0] == "lsp" {
+		os.Exit(runLSP(args[1:]))
 	}
 	if len(args) > 0 {
 		_, ok := commands[args[0]]
@@ -190,7 +208,8 @@ func main() {
 	// then not read at all.
 	var configs []db.DBConfig
 	if len(files) == 0 {
-		configs = loadDBConfigs(configPath())
+		configFiles = []string{configPath()}
+		configs = loadDBConfigs(configFiles[0])
 	}
 	if len(files) > 0 {
 		for _, f := range files {
@@ -199,6 +218,7 @@ func main() {
 				os.Exit(2)
 			}
 			configs = append(configs, loadDBConfigs(f)...)
+			configFiles = append(configFiles, f)
 		}
 	}
 

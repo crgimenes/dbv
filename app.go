@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -369,45 +370,75 @@ func (a *app) paint() {
 	_ = a.t.Draw(a.c)
 }
 
+// absList joins paths, made absolute, as a PATH-like list.
+func absList(paths []string) string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		abs, err := filepath.Abs(p)
+		if err == nil {
+			p = abs
+		}
+		out = append(out, p)
+	}
+	return strings.Join(out, string(os.PathListSeparator))
+}
+
 // external runs program (an editor, a pager) on text in a temporary file
 // and returns what the file holds afterwards, as it is.
 func (a *app) external(program, text string) (string, error) {
+	out, _, err := a.externalSaved(program, text)
+	return out, err
+}
+
+// externalSaved is external, saying also whether the file was written:
+// :wq on text left as it was is a save, :q! is not, and only the file's
+// time tells them apart.
+func (a *app) externalSaved(program, text string) (string, bool, error) {
 	f, err := os.CreateTemp("", "dbv-*.sql")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	name := f.Name()
 	defer func() { _ = os.Remove(name) }()
 	_, err = f.WriteString(text)
 	if err != nil {
 		_ = f.Close()
-		return "", err
+		return "", false, err
 	}
 	err = f.Close()
 	if err != nil {
-		return "", err
+		return "", false, err
+	}
+	before, err := os.Stat(name)
+	if err != nil {
+		return "", false, err
 	}
 
 	err = a.t.Suspend()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	args := strings.Fields(program)                         // EDITOR="code -w" is a command with flags
 	cmd := exec.Command(args[0], append(args[1:], name)...) // #nosec G204 G702 -- the user's own $EDITOR/$PAGER
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if a.pg != nil {
+		cmd.Env = append(os.Environ(), "DBV_DB="+strconv.Itoa(dbNumber), "DBV_CONFIG="+absList(configFiles))
+	}
 	runErr := cmd.Run()
 	err = a.t.Resume()
 	if runErr != nil {
-		return "", fmt.Errorf("%s: %w", args[0], runErr)
+		return "", false, fmt.Errorf("%s: %w", args[0], runErr)
 	}
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	b, err := os.ReadFile(filepath.Clean(name))
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return string(b), nil
+	after, err := os.Stat(name)
+	saved := err == nil && (!os.SameFile(before, after) || !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size())
+	return string(b), saved, nil
 }
 
 func envOr(name, fallback string) string {
@@ -429,7 +460,9 @@ func (a *app) page(text string) error {
 
 // connect opens cfg with the note saying so, since an ssh tunnel or a far
 // server takes long enough to look like a hang.
-func (a *app) connect(cfg db.DBConfig) error {
+// connect opens cfg, the n-th connection (from 1) of the configs read; the
+// number, not the title, tells the editor's dbv lsp which one it is.
+func (a *app) connect(cfg db.DBConfig, n int) error {
 	a.say(kit.Wait, "connecting to %s", cfg.Title)
 	a.paint()
 	start := debugNow()
@@ -442,8 +475,8 @@ func (a *app) connect(cfg db.DBConfig) error {
 		a.pg.Close()
 	}
 	a.pg = pg
-	DBTitle = cfg.Title
-	userViewsDir = cfg.ViewsPath
+	DBTitle, dbNumber = cfg.Title, n
+	userViewsDir = viewsDirFor(cfg)
 	a.note = ""
 	return nil
 }
@@ -488,7 +521,7 @@ func runTUI(configs []db.DBConfig, first func(a *app) view) error {
 
 	switch len(configs) {
 	case 1:
-		err = a.connect(configs[0])
+		err = a.connect(configs[0], 1)
 		if err != nil {
 			return err
 		}
@@ -537,7 +570,7 @@ func (m *dbMenu) key(a *app, k screen.Key) {
 	if i < 0 {
 		return
 	}
-	err := a.connect(m.configs[i])
+	err := a.connect(m.configs[i], i+1)
 	if err != nil {
 		a.fail(err)
 		return

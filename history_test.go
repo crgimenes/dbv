@@ -70,3 +70,16 @@ func TestFormRemembers(t *testing.T) {
 		t.Fatalf("%q", f.form.Value(0))
 	}
 }
+
+func TestHistoryNull(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	_ = os.WriteFile(path, []byte("null"), 0o600)
+	h, err := readHistory(path)
+	if err != nil || h == nil {
+		t.Fatalf("%v %v", h, err)
+	}
+	err = saveLine(path, "k", "x") // used to panic on the nil map
+	if err != nil {
+		t.Fatal(err)
+	}
+}

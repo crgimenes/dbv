@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/crgimenes/filo-term-go/screen"
@@ -61,5 +62,53 @@ func TestQuerySortHere(t *testing.T) {
 	d.command(a, "order") // back to how they came
 	if !slices.Equal(col(1), []string{"b", "a", "c", "a"}) {
 		t.Fatalf("%v", col(1))
+	}
+}
+
+func TestQuerySortExact(t *testing.T) {
+	d := &tableData{query: true, header: []string{"n"}}
+	for _, v := range []string{"9007199254740993", "9007199254740992", "10", "2"} {
+		d.add([]any{v})
+	}
+	a := &app{views: []view{d}}
+	d.orderBy(a, "ASC")
+	got := []string{d.rows[0][0], d.rows[1][0], d.rows[2][0], d.rows[3][0]}
+	if !slices.Equal(got, []string{"2", "10", "9007199254740992", "9007199254740993"}) {
+		t.Fatalf("bigints past 2^53: %v", got)
+	}
+	m := &tableData{query: true, header: []string{"s"}}
+	for _, v := range []string{"2", "10", "1a"} {
+		m.add([]any{v})
+	}
+	m.orderBy(&app{views: []view{m}}, "ASC") // one non-number: all text, a true order
+	if got := []string{m.rows[0][0], m.rows[1][0], m.rows[2][0]}; !slices.Equal(got, []string{"10", "1a", "2"}) {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestQuerySortHuge(t *testing.T) {
+	d := &tableData{query: true, header: []string{"n"}}
+	huge := "1" + strings.Repeat("0", 400)
+	for _, v := range []string{huge, "10", "2"} {
+		d.add([]any{v})
+	}
+	d.orderBy(&app{views: []view{d}}, "ASC")
+	if d.rows[0][0] != "2" || d.rows[2][0] != huge {
+		t.Fatalf("%v", d.rows)
+	}
+}
+
+func TestQuerySortSpecials(t *testing.T) {
+	d := &tableData{query: true, header: []string{"v"}}
+	for _, v := range []string{"NaN", "10", "Infinity", "2", "-Infinity"} {
+		d.add([]any{v})
+	}
+	d.orderBy(&app{views: []view{d}}, "ASC")
+	var got []string
+	for _, r := range d.rows {
+		got = append(got, r[0])
+	}
+	if !slices.Equal(got, []string{"-Infinity", "2", "10", "Infinity", "NaN"}) {
+		t.Fatalf("%v", got)
 	}
 }
