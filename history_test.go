@@ -18,7 +18,7 @@ func TestHistoryFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "/state/dbv/history.json"
-	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+	if runtime.GOOS == "darwin" {
 		want = filepath.Join("dbv", "history.json") // the config dir: no state dir there
 	}
 	if !strings.HasSuffix(filepath.ToSlash(p), filepath.ToSlash(want)) {
@@ -40,7 +40,7 @@ func TestHistorySurvives(t *testing.T) {
 		t.Fatalf("%v %v", h, err)
 	}
 	fi, err := os.Stat(path)
-	if runtime.GOOS != "windows" && (err != nil || fi.Mode().Perm() != 0o600) {
+	if err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("%v %v", fi.Mode(), err)
 	}
 

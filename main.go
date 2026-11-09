@@ -37,7 +37,7 @@ func fileExists(name string) bool {
 
 // getInitFiloPath is init.filo in the platform's config directory:
 // ~/Library/Application Support/dbv on macOS, $XDG_CONFIG_HOME/dbv (or
-// ~/.config/dbv) on Linux and the BSDs, %AppData%\dbv on Windows.
+// ~/.config/dbv) on Linux and the BSDs.
 func getInitFiloPath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {

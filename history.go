@@ -14,7 +14,7 @@ import (
 // macOS has no state directory, so Application Support (Caches may be
 // purged); elsewhere $XDG_STATE_HOME, ~/.local/state by default.
 func historyFile() (string, error) {
-	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+	if runtime.GOOS == "darwin" {
 		dir, err := os.UserConfigDir()
 		if err != nil {
 			return "", err
