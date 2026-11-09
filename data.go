@@ -720,8 +720,10 @@ func (d *tableData) command(a *app, line string) {
 	case cmd == "order" && d.query:
 		d.order = nil
 		d.sortHere()
+	case (cmd == "where" || strings.HasPrefix(cmd, "where ")) && d.query && d.sql == "":
+		a.say(kit.Warn, "a :sql result is not run again (it may write): :sql with a WHERE")
 	case (cmd == "where" || strings.HasPrefix(cmd, "where ")) && d.query:
-		a.say(kit.Warn, "a query has its own where")
+		d.whereQuery(a, strings.TrimSpace(strings.TrimPrefix(cmd, "where")))
 	case cmd == "where" || strings.HasPrefix(cmd, "where "):
 		before := d.where
 		d.where = strings.TrimSpace(strings.TrimPrefix(cmd, "where"))
@@ -768,6 +770,36 @@ func (d *tableData) command(a *app, line string) {
 
 var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "query", "view", "structure", "export", "quit"}
 
+// querySQL is a query's SQL as the grid shows it: its own, inside a
+// subselect when a :where filters it.
+func (d *tableData) querySQL() string {
+	if d.where == "" || d.sql == "" {
+		return d.sql
+	}
+	return "SELECT * FROM (\n" + strings.TrimRight(strings.TrimSpace(d.sql), "; \t\n") + "\n) AS q\nWHERE " + d.where
+}
+
+// whereQuery runs a query again, read only, its rows filtered by cond (none
+// when ""); the order the grid was sorted in stays.
+func (d *tableData) whereQuery(a *app, cond string) {
+	before := d.where
+	d.where = cond
+	nd, err := newQueryData(a, d.name, d.querySQL())
+	if err != nil {
+		d.where = before // the rows on screen are still the old filter's
+		a.fail(err)
+		return
+	}
+	d.columns, d.rows, d.nulls, d.raw = nd.columns, nd.rows, nd.nulls, nd.raw
+	d.truncated, d.total, d.base = nd.truncated, nd.total, nil
+	d.row, d.first = 0, 0
+	d.setHeader()
+	d.measure()
+	if len(d.order) > 0 {
+		d.sortHere()
+	}
+}
+
 // keep starts a query of yours, or a view in the database, from what the
 // grid shows: a table's SELECT (shown columns, filter, order), a query's
 // own SQL.
@@ -776,7 +808,7 @@ func (d *tableData) keep(a *app, name, typ string, start func(a *app, name, body
 		a.say(kit.Warn, "a name: :query NAME, :view NAME")
 		return
 	}
-	body := d.sql
+	body := d.querySQL()
 	if !d.query {
 		err := a.busy("reading "+d.name, func(ctx context.Context) error {
 			q, err := d.selectSQL(ctx, a.pg, d.selectList())
@@ -799,7 +831,7 @@ func (d *tableData) keep(a *app, name, typ string, start func(a *app, name, body
 // in a :where the columns and the words between them.
 func (d *tableData) completions(line string) completion {
 	line = strings.TrimLeft(line, " ")
-	if strings.HasPrefix(line, "where ") && !d.query {
+	if strings.HasPrefix(line, "where ") && (!d.query || d.sql != "") {
 		names := make([]string, len(d.header))
 		for i, h := range d.header {
 			names[i] = sqlName(h)
@@ -995,7 +1027,8 @@ var dataHelp = []string{
 	"o O            order by this column, ascending or descending; again undoes",
 	"x              hide this column (:show brings them all back)",
 	"I S J U        INSERT, Go struct, JSON of the row, UPDATE of the row",
-	":where COND    filter rows (:where alone clears); tab completes",
+	":where COND    filter rows (:where alone clears); tab completes; a query's",
+	"               rows are read again, its SQL inside a subselect",
 	":order         clear the order",
 	":insert :struct :json :update  the same as I S J U",
 	":sql           write SQL in $EDITOR and run it (writes too); starts as the grid's SELECT",

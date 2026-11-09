@@ -188,3 +188,23 @@ func TestConstraints(t *testing.T) {
 		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}
 }
+
+// A query filtered by :where runs inside a subselect: its ;, a comment on
+// its last line and its ORDER BY must not break it.
+func TestWhereOnAQuery(t *testing.T) {
+	d := &tableData{sql: "-- dbv: db=x\nSELECT n FROM generate_series(1, 5) n\nORDER BY n DESC -- newest first\n;\n"}
+	if d.querySQL() != d.sql {
+		t.Fatal("no where: the query as it is")
+	}
+	d.where = "n > 2"
+	pg := testDB(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := pg.QueryReadOnly(ctx, 10, d.querySQL())
+	if err != nil {
+		t.Fatalf("%v\n%s", err, d.querySQL())
+	}
+	if len(res.Rows) != 3 {
+		t.Fatalf("%v", res.Rows)
+	}
+}

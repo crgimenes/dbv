@@ -27,7 +27,7 @@ func runSQL(a *app) {
 	}
 	d, ok := a.top().(*tableData)
 	if ok && d.sql != "" {
-		text = sqlTemplate + strings.TrimSpace(d.sql) + "\n" // the view as it ran, parameters filled
+		text = sqlTemplate + strings.TrimSpace(d.querySQL()) + "\n" // the query as it ran, parameters filled
 	}
 	if ok && !d.query {
 		err := a.busy("reading "+d.name, func(ctx context.Context) error {
