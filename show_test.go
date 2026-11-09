@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/crgimenes/dbv/db"
 )
@@ -43,20 +46,20 @@ func TestCutSQL(t *testing.T) {
 func TestShowDB(t *testing.T) {
 	t.Setenv("DBV_CONFIG", "/a.filo"+string(os.PathListSeparator)+"/b.filo")
 	t.Setenv("DBV_DB", "2")
-	files, name := showDB("", "", "-- dbv: db=Other\n")
+	files, name, _ := showDB("", "", "-- dbv: db=Other\n")
 	if !slices.Equal(files, []string{"/a.filo", "/b.filo"}) || name != "2" {
 		t.Fatalf("inside dbv: %v %q", files, name)
 	}
-	files, name = showDB("", "Prod", "")
+	files, name, _ = showDB("", "Prod", "")
 	if len(files) != 2 || name != "Prod" {
 		t.Fatalf("-db inside dbv: %v %q", files, name)
 	}
-	files, name = showDB("/c.filo", "", "-- dbv: db=Other\n")
+	files, name, _ = showDB("/c.filo", "", "-- dbv: db=Other\n")
 	if !slices.Equal(files, []string{"/c.filo"}) || name != "Other" {
 		t.Fatalf("-config: %v %q", files, name)
 	}
 	t.Setenv("DBV_DB", "")
-	files, name = showDB("", "", "-- dbv: db=Other\n")
+	files, name, _ = showDB("", "", "-- dbv: db=Other\n")
 	if !slices.Equal(files, []string{configPath()}) || name != "Other" {
 		t.Fatalf("loose file: %v %q", files, name)
 	}
@@ -126,5 +129,69 @@ func TestShowFindsTheConnection(t *testing.T) {
 	}
 	if got := runShow([]string{"-h"}); got != 0 {
 		t.Fatalf("-h: exit %d", got)
+	}
+}
+
+func TestInfo(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "init.filo")
+	err := os.WriteFile(cfg, []byte(`(database "postgres://u:s3cret@127.0.0.1:1/x?sslpassword=k3y" "Down")
+(database "postgres://u@127.0.0.1:1/y" "Other")`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	err = writeInfo(&b, []string{cfg}, "", "the only connection configured", time.Second)
+	if err == nil || !strings.Contains(b.String(), "1  Down") || strings.Contains(b.String(), "Database") {
+		t.Fatalf("two connections, none named: %v\n%s", err, b.String())
+	}
+	b.Reset()
+	err = writeInfo(&b, []string{cfg}, "Down", "-db", time.Second)
+	out := b.String() + fmt.Sprint(err)
+	if err == nil || !strings.Contains(out, "* 1  Down") || !strings.Contains(out, "not reached") {
+		t.Fatalf("unreachable: %s", out)
+	}
+	if strings.Contains(out, "s3cret") || strings.Contains(out, "k3y") {
+		t.Fatalf("a password shows: %s", out)
+	}
+}
+
+func TestInfoServer(t *testing.T) {
+	cfg := testConfig(t)
+	var b strings.Builder
+	err := writeInfo(&b, []string{cfg}, "", "the only connection configured", 5*time.Second)
+	if err != nil || !strings.Contains(b.String(), "Server     PostgreSQL") || !strings.Contains(b.String(), "Read only  off") {
+		t.Fatalf("%v\n%s", err, b.String())
+	}
+}
+
+func TestURLErrorsHideThePassword(t *testing.T) {
+	for _, u := range []string{"postgres://u:s3cret@host:bad/db", "ssh+postgres://u:s3cret@host:bad/db", "postgres://u:s3cret@host/%zz"} {
+		_, err := db.New(u)
+		if err == nil || strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("db.New(%q): %v", u, err)
+		}
+		_, err = maskDBURL(u)
+		if err != nil && strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("maskDBURL(%q): %v", u, err)
+		}
+	}
+	cfg := filepath.Join(t.TempDir(), "init.filo")
+	err := os.WriteFile(cfg, []byte(`(database "postgres://u:s3cret@host:bad/db")`), 0o600) // no title: the URL masked is the title
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = readDBConfigs(cfg)
+	if err == nil || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("readDBConfigs: %v", err)
+	}
+}
+
+func TestReadOnlyCellRefusedBeforeTheEditor(t *testing.T) {
+	d := &tableData{readOnly: true, query: true, header: []string{"x"}, rows: [][]string{{"1"}}, nulls: [][]bool{{false}}}
+	a := &app{} // no terminal: reaching the editor would panic
+	d.editCell(a)
+	if !strings.Contains(a.note, "p views it") {
+		t.Fatalf("note %q", a.note)
 	}
 }

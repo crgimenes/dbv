@@ -278,6 +278,14 @@ func (a *app) run() error {
 			a.paint()
 			continue
 		}
+		w, h := a.t.Size()
+		if w < minW || h < minH {
+			// nothing shows: a key would act unseen (a y/N asked, a cell saved)
+			if ev.Key == 'q' || ev.Key == screen.Ctrl('c') {
+				a.quit = true
+			}
+			continue
+		}
 		start := debugNow()
 		view := ""
 		if debugOut != nil {
@@ -335,7 +343,7 @@ func (a *app) paint() {
 	w, h := a.t.Size()
 	a.c.Resize(w, h)
 	if w < minW || h < minH {
-		msg := fmt.Sprintf("dbv needs %dx%d, this is %dx%d", minW, minH, w, h)
+		msg := fmt.Sprintf("dbv needs %dx%d, this is %dx%d; q quits", minW, minH, w, h)
 		a.c.Print(h/2, max(0, (w-screen.Width(msg))/2), msg, screen.Pen{FG: kit.CWarn, BG: screen.Default})
 		_ = a.t.Draw(a.c)
 		return

@@ -205,3 +205,41 @@ func TestPKLastColumn(t *testing.T) {
 	}
 	mustExec(t, pg, stmt)
 }
+
+func TestParentsAndPartitions(t *testing.T) {
+	pg := testDB(t, "")
+	mustExec(t, pg, `DROP TABLE IF EXISTS dbv_ip, dbv_pp CASCADE;
+CREATE TABLE dbv_ip (id int PRIMARY KEY, v text);
+CREATE TABLE dbv_ic () INHERITS (dbv_ip);
+INSERT INTO dbv_ip VALUES (1, 'parent'); INSERT INTO dbv_ic VALUES (1, 'child');
+CREATE TABLE dbv_pp (id int PRIMARY KEY, v text) PARTITION BY RANGE (id);
+CREATE TABLE dbv_pp1 PARTITION OF dbv_pp FOR VALUES FROM (0) TO (100);
+INSERT INTO dbv_pp VALUES (5, 'p');`)
+	ctx := context.Background()
+
+	// the parent's grid holds the rows its edits reach: its own
+	recs, _, total, err := pg.ListRecords(ctx, "dbv_ip", "", 0, 10, "", "")
+	if err != nil || total != 1 || len(recs) != 1 || recs[0]["v"] != "parent" {
+		t.Fatalf("parent rows: %v %d %v", recs, total, err)
+	}
+
+	// a partitioned table's rows are its partitions'
+	recs, _, total, err = pg.ListRecords(ctx, "dbv_pp", "", 0, 10, "", "")
+	if err != nil || total != 1 || len(recs) != 1 {
+		t.Fatalf("partitioned rows: %v %d %v", recs, total, err)
+	}
+	err = pg.UpdateDataCell(ctx, "dbv_pp", "v", "edited", []string{"id"}, []any{"5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt, err := pg.CreateUpdateStatement("dbv_pp", []string{"id", "v"}, []any{"5", "again"})
+	if err != nil || strings.Contains(stmt, "ONLY") {
+		t.Fatalf("partitioned update:\n%s %v", stmt, err)
+	}
+	mustExec(t, pg, stmt)
+	var v string
+	err = pg.Get(&v, `SELECT v FROM dbv_pp WHERE id = 5`)
+	if err != nil || v != "again" {
+		t.Fatalf("partition row: %q %v", v, err)
+	}
+}

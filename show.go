@@ -69,7 +69,7 @@ func runShow(argv []string) int {
 	if err != nil {
 		return report("show", err)
 	}
-	files, want := showDB(*config, *name, text)
+	files, want, _ := showDB(*config, *name, text)
 	var configs []db.DBConfig
 	for _, f := range files {
 		c, err := readDBConfigs(f)
@@ -98,24 +98,29 @@ func runShow(argv []string) int {
 	return report("show", err)
 }
 
-// showDB is which configs and connection: -db and -config first; then the
-// dbv this runs under (DBV_DB, DBV_CONFIG); then the file's header.
-func showDB(config, name, text string) ([]string, string) {
+// showDB is which configs and connection, and why: -db and -config first;
+// then the dbv this runs under (DBV_DB, DBV_CONFIG); then the file's
+// header; else the only connection configured.
+func showDB(config, name, text string) (files []string, want, why string) {
 	envFiles, envDB := os.Getenv("DBV_CONFIG"), os.Getenv("DBV_DB")
-	files := []string{configPath()}
+	files = []string{configPath()}
 	if config != "" {
 		files = []string{config}
 	}
+	why = "-db"
 	if config == "" && envFiles != "" && envDB != "" {
 		files = filepath.SplitList(envFiles)
 		if name == "" {
-			name = envDB // a number: only meaningful in the files it came with
+			name, why = envDB, "the dbv this nvim runs under" // a number: only meaningful in the files it came with
 		}
 	}
 	if name == "" {
-		name = headerDB(text)
+		name, why = headerDB(text), `the file's "-- dbv: db=" line`
 	}
-	return files, name
+	if name == "" {
+		why = "the only connection configured"
+	}
+	return files, name, why
 }
 
 // cutSQL is the part of text at says: all of it, the statement at a byte

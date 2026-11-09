@@ -1,7 +1,8 @@
 -- dbv.lua: run the SQL statement under the cursor, or the selection, and
 -- see its rows in dbv's grid in a split below (dbv show -h). :DBVRun runs
 -- the statement at the cursor; from visual mode (:'<,'>DBVRun) the
--- selection; with a range of lines, those lines.
+-- selection; with a range of lines, those lines. :DBVInfo says which
+-- connection the buffer gets, and why, and what the server is.
 -- The connection is dbv's when nvim runs inside it (DBV_DB), else the
 -- file's "-- dbv: db=NAME", else the only one configured.
 local M = {}
@@ -74,6 +75,41 @@ function M.run(opts)
   vim.cmd("startinsert")
 end
 
+-- a float with lines; q or <Esc> closes it
+local function float(lines)
+  local width = 20
+  for _, l in ipairs(lines) do
+    width = math.max(width, vim.fn.strdisplaywidth(l))
+  end
+  width = math.min(width, vim.o.columns - 4)
+  local height = math.min(#lines, vim.o.lines - 4)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.api.nvim_open_win(buf, true, {
+    relative = "editor", style = "minimal", border = "rounded", title = " dbv ",
+    width = width, height = height,
+    row = math.floor((vim.o.lines - height) / 2), col = math.floor((vim.o.columns - width) / 2),
+  })
+  for _, key in ipairs({ "q", "<Esc>" }) do
+    vim.keymap.set("n", key, "<cmd>close<CR>", { buffer = buf, nowait = true })
+  end
+end
+
+-- M.info shows the connection this buffer gets and the server behind it.
+function M.info()
+  local tmp = vim.fn.tempname() .. ".sql"
+  vim.fn.writefile(vim.api.nvim_buf_get_lines(0, 0, -1, false), tmp) -- the header names the database
+  vim.system({ "dbv", "info", tmp }, { text = true }, function(r)
+    vim.schedule(function()
+      os.remove(tmp)
+      local out = vim.split(vim.trim((r.stdout or "") .. (r.stderr or "")), "\n")
+      float(out)
+    end)
+  end)
+end
+
 vim.api.nvim_create_user_command("DBVRun", M.run, { range = true })
+vim.api.nvim_create_user_command("DBVInfo", M.info, {})
 
 return M

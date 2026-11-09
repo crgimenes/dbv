@@ -56,7 +56,7 @@ func configPath() string {
 }
 
 func maskDBURL(dbURL string) (string, error) {
-	u, err := url.Parse(dbURL)
+	u, err := db.ParseURL(dbURL)
 	if err != nil {
 		return "", err
 	}
@@ -85,7 +85,8 @@ func maskDBURL(dbURL string) (string, error) {
 func loadDBConfigs(name string) []db.DBConfig {
 	configs, err := readDBConfigs(name)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(os.Stderr, "dbv: %s: %v\n", name, err)
+		os.Exit(1)
 	}
 	return configs
 }
@@ -185,6 +186,9 @@ func main() {
 	}
 	if len(args) > 0 && args[0] == "show" {
 		os.Exit(runShow(args[1:]))
+	}
+	if len(args) > 0 && args[0] == "info" {
+		os.Exit(runInfo(args[1:]))
 	}
 	if len(args) > 0 {
 		_, ok := commands[args[0]]

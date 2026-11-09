@@ -830,6 +830,14 @@ func (d *tableData) editCell(a *app) {
 	if d.row >= len(d.rows) {
 		return
 	}
+	if d.readOnly { // before the editor: what is typed there would be lost
+		why := "no primary key"
+		if d.query {
+			why = "the rows of a query"
+		}
+		a.say(kit.Warn, "%s: nothing to save a cell to; p views it", why)
+		return
+	}
 	old := d.cell()
 	raw, err := a.edit(old)
 	if err != nil {
@@ -838,10 +846,6 @@ func (d *tableData) editCell(a *app) {
 	}
 	value, changed := edited(old, raw)
 	if !changed {
-		return
-	}
-	if d.readOnly {
-		a.say(kit.Err, "read only: no primary key")
 		return
 	}
 	start := debugNow()

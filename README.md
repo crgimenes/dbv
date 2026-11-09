@@ -226,6 +226,12 @@ Load it from your config:
 require "dbv"
 ```
 
+`:DBVInfo` opens a float (`q` closes it) with the connection the buffer
+gets and why (the dbv nvim runs under, the file's `-- dbv: db=` line, the
+only one configured), its URL without the password, the views directory,
+the server's version, user, database, size and table count, and the list of
+connections; it is `dbv info FILE` (`dbv info -h`).
+
 It calls `dbv show -at OFFSET FILE` (`dbv show -h`) on a copy of the
 buffer; the connection is chosen as for completion. Reads run at once in a
 read-only session, which the server enforces, so a `WITH` that deletes or a

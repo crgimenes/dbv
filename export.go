@@ -175,7 +175,7 @@ func (d *tableData) selectSQL(ctx context.Context, pg *db.Postgres, cols string)
 			keys = append(keys, db.QuoteName(c))
 		}
 	}
-	q := "SELECT " + cols + "\nFROM " + rel.SQL
+	q := "SELECT " + cols + "\nFROM " + rel.From()
 	if d.where != "" {
 		q += "\nWHERE " + d.where
 	}

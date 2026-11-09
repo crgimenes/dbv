@@ -56,9 +56,19 @@ type DBConfig struct {
 	ViewsPath string
 }
 
+// ParseURL is url.Parse with an error that leaves the URL out: url.Parse
+// quotes it whole, password and all.
+func ParseURL(s string) (*url.URL, error) {
+	u, err := url.Parse(s)
+	if ue, ok := errors.AsType[*url.Error](err); ok {
+		return nil, fmt.Errorf("the url does not parse: %w", ue.Err)
+	}
+	return u, err
+}
+
 func New(dataBaseURL string) (*Postgres, error) {
 	pg := &Postgres{}
-	u, err := url.Parse(dataBaseURL)
+	u, err := ParseURL(dataBaseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +120,7 @@ func expandPath(p string) (string, error) {
 // ssh+postgres://dbUser:dbPass@dbRemoteHost:5432/dbname?sshalias=mydb&localport=5433&sslmode=disable
 func (pg *Postgres) open(dbsource string) (*sqlx.DB, error) {
 	if after, ok := strings.CutPrefix(dbsource, "ssh+"); ok {
-		u, err := url.Parse(after)
+		u, err := ParseURL(after)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse DSN: %w", err)
 		}
@@ -445,7 +455,7 @@ func (pg *Postgres) ListRecords(
 	}
 
 	var totalRecords int
-	err = pg.DB.GetContext(ctx, &totalRecords, fmt.Sprintf("SELECT COUNT(*) FROM %s %s", rel.SQL, where))
+	err = pg.DB.GetContext(ctx, &totalRecords, fmt.Sprintf("SELECT COUNT(*) FROM %s %s", rel.From(), where))
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -476,7 +486,7 @@ func (pg *Postgres) ListRecords(
 	sqlStatement := fmt.Sprintf(
 		"SELECT %s\nFROM\n%s %s %s\nOFFSET %d\nLIMIT %d",
 		strings.Join(fields, ", "),
-		rel.SQL,
+		rel.From(),
 		where,
 		order,
 		offset,
@@ -619,10 +629,9 @@ func (pg *Postgres) UpdateDataCell(
 		whereClauses[i] = fmt.Sprintf("%s = $%d", QuoteName(field), i+2)
 	}
 
-	// ONLY: an inherited child holding the same key is another row.
 	sqlStatement := fmt.Sprintf( // #nosec G201 -- names quoted by Resolve and QuoteName, values bound
-		"UPDATE ONLY %s SET %s = $1%s WHERE %s",
-		rel.SQL,
+		"UPDATE %s SET %s = $1%s WHERE %s",
+		rel.Target(),
 		QuoteName(fieldName),
 		updateCast,
 		strings.Join(whereClauses, " AND "),
@@ -727,7 +736,7 @@ func (pg *Postgres) CreateUpdateStatement(tableName string, headers []string, ro
 	for i := 1; i < len(wheres); i++ {
 		wheres[i] = "  AND " + wheres[i]
 	}
-	return fmt.Sprintf("UPDATE ONLY %s\nSET\n%s\nWHERE %s\n;", rel.SQL, setBlock, number(wheres, "")), nil
+	return fmt.Sprintf("UPDATE %s\nSET\n%s\nWHERE %s\n;", rel.Target(), setBlock, number(wheres, "")), nil
 }
 
 // sqlValue is v as a literal for a column of dataType: numbers and booleans

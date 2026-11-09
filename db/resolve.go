@@ -13,7 +13,23 @@ type Rel struct {
 	Schema string
 	Name   string
 	OID    uint32
+	Kind   string // pg_class.relkind: r table, p partitioned, v view, m materialized view, f foreign
+	Parent bool   // other tables inherit from it (relhassubclass; partitions too)
 }
+
+// From is the relation as a SELECT reads it: a table others inherit from
+// without their rows, the same rows an UPDATE reaches; a partitioned one
+// with its partitions, which hold all its rows. ONLY only where it changes
+// something, so the SQL shown stays plain.
+func (r Rel) From() string {
+	if r.Parent && r.Kind == "r" {
+		return "ONLY " + r.SQL
+	}
+	return r.SQL
+}
+
+// Target is the relation as an UPDATE writes it: the rows From reads.
+func (r Rel) Target() string { return r.From() }
 
 // Resolve accepts a bare relation name as the catalog lists it ("Order
 // Items", "Users") or a qualified one as typed ("archive.users"). A bare
@@ -23,7 +39,9 @@ func (pg *Postgres) Resolve(ctx context.Context, name string) (Rel, error) {
 	c.oid,                  -- 1
 	c.oid::regclass::text,  -- 2
 	n.nspname,              -- 3
-	c.relname               -- 4
+	c.relname,              -- 4
+	c.relkind::text,        -- 5
+	c.relhassubclass        -- 6
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.oid = COALESCE(to_regclass(quote_ident($1)), to_regclass($1))`
@@ -33,6 +51,8 @@ WHERE c.oid = COALESCE(to_regclass(quote_ident($1)), to_regclass($1))`
 		&r.SQL,    // 2
 		&r.Schema, // 3
 		&r.Name,   // 4
+		&r.Kind,   // 5
+		&r.Parent, // 6
 	)
 	if err != nil {
 		return r, fmt.Errorf("no table %q: %w", name, err)

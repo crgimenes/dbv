@@ -42,6 +42,7 @@ others read the catalog with fixed queries):
 Editor:
   lsp                 language server for .sql files (dbv lsp -h)
   show FILE           run a file's SQL, or the statement at -at, in the grid (dbv show -h)
+  info [FILE]         the connection a file gets, and the server behind it (dbv info -h)
 
 Writing (refused without -write):
   exec [SQL | -]      run SQL, all of it in one transaction
@@ -338,7 +339,7 @@ func cmdRows(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) err
 		order = strings.Join(pk, ", ")
 	}
 	var q strings.Builder
-	q.WriteString("SELECT * FROM " + rel.SQL)
+	q.WriteString("SELECT * FROM " + rel.From())
 	if o.where != "" {
 		q.WriteString(" WHERE " + o.where)
 	}
