@@ -310,9 +310,25 @@ func Statement(text string, offset int) (start, end int) {
 }
 
 // blankLine is a gap holding a line with nothing on it; a comment in the
-// gap counts as nothing.
+// gap counts as nothing, and a blank line inside a /* comment */ cuts
+// nothing.
 func blankLine(gap string) bool {
-	lines := strings.Split(gap, "\n")
+	var b strings.Builder
+	for i := 0; i < len(gap); {
+		switch {
+		case strings.HasPrefix(gap[i:], "--"):
+			end := lineEnd(gap, i)
+			b.WriteString(gap[i:end])
+			i = end
+		case strings.HasPrefix(gap[i:], "/*"):
+			i = skipBlock(gap, i)
+			b.WriteByte(' ')
+		default:
+			b.WriteByte(gap[i])
+			i++
+		}
+	}
+	lines := strings.Split(b.String(), "\n")
 	if len(lines) < 3 {
 		return false // no line both starts and ends in the gap
 	}

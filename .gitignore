@@ -25,6 +25,7 @@ go.work.sum
 .env
 
 *.lua
+!neovim/dbv.lua
 draft
 .DS_Store
 .vscode

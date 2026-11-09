@@ -485,6 +485,23 @@ func runTUI(configs []db.DBConfig, first func(a *app) view) error {
 	if len(configs) == 0 {
 		return fmt.Errorf("no connection configured in %s", configPath())
 	}
+	return withApp(func(a *app) error {
+		if len(configs) > 1 {
+			a.push(&dbMenu{configs: configs, next: first})
+			return nil
+		}
+		err := a.connect(configs[0], 1)
+		if err != nil {
+			return err
+		}
+		a.push(first(a))
+		return nil
+	})
+}
+
+// withApp opens the terminal, lets start push the first screen, and runs
+// the screens until the last one closes.
+func withApp(start func(a *app) error) error {
 	t, err := screen.Open()
 	if err != nil {
 		return err
@@ -519,15 +536,9 @@ func runTUI(configs []db.DBConfig, first func(a *app) view) error {
 		os.Exit(1)
 	}()
 
-	switch len(configs) {
-	case 1:
-		err = a.connect(configs[0], 1)
-		if err != nil {
-			return err
-		}
-		a.push(first(a))
-	default:
-		a.push(&dbMenu{configs: configs, next: first})
+	err = start(a)
+	if err != nil {
+		return err
 	}
 	return a.run()
 }

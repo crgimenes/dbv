@@ -2,8 +2,10 @@ package db
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -26,6 +28,23 @@ type Statement struct {
 // unless the text opens its own. Writes are allowed; this is the user
 // typing SQL. Each statement keeps at most limit rows.
 func (pg *Postgres) Run(ctx context.Context, sqlText string, limit int) ([]Statement, error) {
+	return pg.run(ctx, sqlText, limit, false)
+}
+
+// RunReadOnly is Run with the session read only: every transaction the
+// text runs, its own included, refuses a write (IsReadOnly says so). It
+// guards against a slip, not against text that turns it off on purpose.
+func (pg *Postgres) RunReadOnly(ctx context.Context, sqlText string, limit int) ([]Statement, error) {
+	return pg.run(ctx, sqlText, limit, true)
+}
+
+// IsReadOnly is the server refusing a write in a read-only transaction.
+func IsReadOnly(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "25006"
+}
+
+func (pg *Postgres) run(ctx context.Context, sqlText string, limit int, readOnly bool) ([]Statement, error) {
 	conn, err := pg.DB.Conn(ctx)
 	if err != nil {
 		return nil, err
@@ -36,6 +55,12 @@ func (pg *Postgres) Run(ctx context.Context, sqlText string, limit int) ([]State
 		c, ok := dc.(*stdlib.Conn)
 		if !ok {
 			return errors.New("not a pgx connection")
+		}
+		if readOnly {
+			_, err := c.Conn().Exec(ctx, "SET default_transaction_read_only = on")
+			if err != nil {
+				return err
+			}
 		}
 		types := c.Conn().TypeMap()
 		mrr := c.Conn().PgConn().Exec(ctx, sqlText)
@@ -85,5 +110,8 @@ func (pg *Postgres) Run(ctx context.Context, sqlText string, limit int) ([]State
 		}
 		return nil
 	})
+	if readOnly {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn }) // closed: the pool must not hand out a read-only session
+	}
 	return out, err
 }

@@ -41,6 +41,7 @@ others read the catalog with fixed queries):
 
 Editor:
   lsp                 language server for .sql files (dbv lsp -h)
+  show FILE           run a file's SQL, or the statement at -at, in the grid (dbv show -h)
 
 Writing (refused without -write):
   exec [SQL | -]      run SQL, all of it in one transaction

@@ -41,9 +41,14 @@ func TestParameterNamesAreWhole(t *testing.T) {
 }
 
 func TestMaskQueryPassword(t *testing.T) {
-	got, err := maskDBURL("postgres://u@host/db?password=secret&sslmode=disable")
-	if err != nil || strings.Contains(got, "secret") {
-		t.Fatalf("%q %v", got, err)
+	for _, u := range []string{
+		"postgres://u@host/db?password=secret&sslmode=disable",
+		"postgres://u@host/db?sslpassword=secret", // the client key's
+	} {
+		got, err := maskDBURL(u)
+		if err != nil || strings.Contains(got, "secret") {
+			t.Fatalf("%q %v", got, err)
+		}
 	}
 }
 

@@ -212,6 +212,24 @@ vim.lsp.config('dbv', { cmd = { 'dbv', 'lsp' }, filetypes = { 'sql' } })
 vim.lsp.enable('dbv')
 ```
 
+### Running a statement
+
+`neovim/dbv.lua` runs the statement under the cursor, or the selection,
+and shows its rows in dbv's grid in a split below; `q` closes it. In `.sql`
+buffers that is `<C-CR>` or `<leader>t`, in normal or visual mode, and
+`:DBVRun` (it takes a range) anywhere. Load it from your config:
+
+```lua
+-- ~/.config/nvim/lua/dbv.lua linked to the repository's neovim/dbv.lua
+require "dbv"
+```
+
+It calls `dbv show -at OFFSET FILE` (`dbv show -h`) on a copy of the
+buffer; the connection is chosen as for completion. Reads run at once in a
+read-only session, which the server enforces, so a `WITH` that deletes or a
+function that writes is caught too; anything that writes asks `y/N`
+first. The cursor just past a `;` runs that statement, as in DBeaver.
+
 ## Examples
 
 ### Building from Source

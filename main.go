@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/crgimenes/filo"
 
@@ -67,9 +68,11 @@ func maskDBURL(dbURL string) (string, error) {
 		}
 	}
 	q := u.Query()
-	if q.Has("password") { // libpq and pgx take it from the query too
-		q.Set("password", "...")
-		u.RawQuery = q.Encode()
+	for k := range q {
+		if strings.Contains(strings.ToLower(k), "password") { // password, sslpassword: libpq and pgx read both from the query
+			q.Set(k, "...")
+			u.RawQuery = q.Encode()
+		}
 	}
 
 	return u.String(), nil
@@ -179,6 +182,9 @@ func main() {
 	}
 	if len(args) > 0 && args[0] == "lsp" {
 		os.Exit(runLSP(args[1:]))
+	}
+	if len(args) > 0 && args[0] == "show" {
+		os.Exit(runShow(args[1:]))
 	}
 	if len(args) > 0 {
 		_, ok := commands[args[0]]

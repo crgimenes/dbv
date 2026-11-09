@@ -118,6 +118,20 @@ func TestStatement(t *testing.T) {
 			t.Errorf("at %q: got %q, want %q", c.at, text[s:e], c.want)
 		}
 	}
+	text = "select 1 /*\n\n*/ + 2\n/* c */\n\nselect 3\n-- a /*\n\nselect 4"
+	for _, c := range []struct {
+		at   string
+		want string
+	}{
+		{"+ 2", "select 1 /*\n\n*/ + 2"}, // a blank line inside a comment cuts nothing
+		{"select 3", "/* c */\n\nselect 3"},
+		{"select 4", "-- a /*\n\nselect 4"}, // "/*" in a -- comment opens nothing
+	} {
+		s, e := Statement(text, strings.Index(text, c.at))
+		if text[s:e] != c.want {
+			t.Errorf("at %q: got %q, want %q", c.at, text[s:e], c.want)
+		}
+	}
 }
 
 func TestDescribe(t *testing.T) {

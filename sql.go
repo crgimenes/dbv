@@ -75,6 +75,12 @@ func runSQL(a *app) {
 			d.reload(a) // the rows on screen may be among the changed ones
 		}
 	}
+	pushResult(a, res, tags)
+}
+
+// pushResult shows the last statement of res that returns rows as a grid,
+// and the tags in the note.
+func pushResult(a *app, res []db.Statement, tags []string) {
 	for _, st := range slices.Backward(res) {
 		if len(st.Columns) == 0 {
 			continue
