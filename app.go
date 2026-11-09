@@ -127,7 +127,7 @@ func (a *app) busy(what string, op func(ctx context.Context) error) error {
 				cancel()
 				continue
 			}
-			if ev.Key == screen.KeyEsc {
+			if ev.Key == screen.KeyEsc || ev.Key == screen.Ctrl('c') {
 				cancel()
 				a.say(kit.Wait, "cancelling %s", what)
 				shown = true
@@ -263,6 +263,18 @@ func (a *app) setLine(line string) {
 
 func (a *app) asking() bool { return a.onLine != nil }
 
+// stop hands the terminal back and stops the job until the shell's fg.
+func (a *app) stop() {
+	err := a.t.Suspend()
+	if err == nil {
+		err = stopSelf()
+	}
+	err = errors.Join(err, a.t.Resume())
+	if err != nil {
+		a.fail(err)
+	}
+}
+
 func (a *app) closeLine() {
 	a.onLine, a.onEdit, a.onTab, a.onPick, a.menu, a.prompt = nil, nil, nil, nil, nil, ""
 }
@@ -304,8 +316,27 @@ func (a *app) run() error {
 	return nil
 }
 
+// handle gives k to the command line or the top view, after the keys that
+// mean the same everywhere, as in any Unix terminal program: Ctrl-Z
+// suspends, Ctrl-L redraws, Ctrl-C quits (on a command line it drops the
+// line, as a shell does).
 func (a *app) handle(k screen.Key) {
+	switch k {
+	case screen.Ctrl('z'):
+		a.stop()
+		return
+	case screen.Ctrl('l'):
+		err := errors.Join(a.t.Suspend(), a.t.Resume()) // the next paint draws every cell
+		if err != nil {
+			a.fail(err)
+		}
+		return
+	}
 	if !a.asking() {
+		if k == screen.Ctrl('c') {
+			a.quit = true
+			return
+		}
 		a.note = ""
 		a.top().key(a, k)
 		return
@@ -314,7 +345,7 @@ func (a *app) handle(k screen.Key) {
 		return
 	}
 	switch k {
-	case screen.KeyEsc:
+	case screen.KeyEsc, screen.Ctrl('c'):
 		done := a.onEdit
 		a.closeLine()
 		if done != nil {
@@ -581,7 +612,7 @@ func (m *dbMenu) draw(_ *app, c *screen.Canvas, top, left, _, cols int) {
 }
 
 func (m *dbMenu) key(a *app, k screen.Key) {
-	if k == 'q' || k == screen.KeyEsc || k == screen.Ctrl('c') {
+	if k == 'q' || k == screen.KeyEsc {
 		a.quit = true
 		return
 	}

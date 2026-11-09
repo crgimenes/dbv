@@ -161,11 +161,16 @@ Table list:
 - `:`: command line; `?`: help
 - `Esc`: back to the database menu; `q`: quit
 
+Everywhere, as in other terminal programs: `Ctrl-C` quits (on a command
+line it drops the line), `Ctrl-Z` suspends (`fg` resumes), `Ctrl-L`
+redraws, and `Ctrl-F`/`Ctrl-B` page like `PgDn`/`PgUp`.
+
 Table data:
 
 - `↑↓←→` / `h j k l`, `PgUp PgDn`: move; `g G`: first and last row; `Home End`: first and last column
-- `Enter`, `e`, `v`: edit the cell in `$EDITOR` (saved to the table; needs a primary key)
-- `p`: view the cell in `$PAGER`
+- `Enter`, `p`: view the cell in `$PAGER`
+- `e`, `v`: edit the cell in `$EDITOR` (saved to the table; needs a primary key)
+- `/`, `n`, `N`: search the rows read so far (regular expression), next, previous
 - `y`, `Y`: copy the cell, or the row as tab-separated text, to the clipboard (through the terminal, OSC 52; works over ssh, and in tmux with `set -g set-clipboard on`)
 - `o`, `O`: order by this column, ascending or descending; the same key again drops that column from the order (the others stay), the other key flips its direction
 - On a user view or a `:sql` result, `o`/`O` sort the rows in memory (NULLs as PostgreSQL puts them; `:order` restores how they came), and `:sql` starts from the view's SQL with its parameters filled
@@ -173,7 +178,7 @@ Table data:
 - `x`: hide this column (`:show` brings them all back); `:sql` on a table starts as the grid's SELECT: its shown columns, `:where` and order
 - `I`, `S`, `J`, `U`: INSERT template, Go struct, JSON of the row, UPDATE of the row (INSERT and UPDATE run when saved changed)
 - `:`: command line; `?`: help
-- `Esc`, `q`: back to the table list
+- `Esc`, `q`, `:q`: back to the table list
 
 ## SQL files in Neovim
 

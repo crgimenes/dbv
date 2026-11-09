@@ -390,6 +390,7 @@ func (pg *Postgres) ListTablesAndViews() ([]TableInfo, error) {
             FROM pg_index i
             JOIN pg_attribute a
                 ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+               AND array_position(i.indkey::int2[], a.attnum) - array_lower(i.indkey::int2[], 1) < i.indnkeyatts
             WHERE i.indrelid = c.oid AND i.indisprimary
         ) AS primary_key
         FROM pg_class c
@@ -420,12 +421,39 @@ func (pg *Postgres) ListColumns(tableName string) ([]ColumnInfo, error) {
 }
 
 func (pg *Postgres) relColumns(ctx context.Context, rel Rel) ([]ColumnInfo, error) {
-	const sqlStatement = `SELECT column_name, data_type
-	FROM information_schema.columns
-	WHERE table_schema = $1 AND table_name = $2
-	ORDER BY ordinal_position;`
-	var columns []ColumnInfo
-	err := pg.DB.SelectContext(ctx, &columns, sqlStatement, rel.Schema, rel.Name)
+	ex, err := pg.relColumnsEx(ctx, rel)
+	if err != nil {
+		return nil, err
+	}
+	columns := make([]ColumnInfo, len(ex))
+	for i, c := range ex {
+		columns[i] = ColumnInfo{ColumnName: c.ColumnName, DataType: c.DataType}
+	}
+	return columns, nil
+}
+
+// relColumnsEx reads pg_attribute, not information_schema.columns, which
+// leaves materialized views out. data_type is named as information_schema
+// names it (ARRAY, USER-DEFINED, a domain's base type): what the callers
+// match on.
+func (pg *Postgres) relColumnsEx(ctx context.Context, rel Rel) ([]ColumnInfoEx, error) {
+	const sqlStatement = `SELECT
+	a.attname AS column_name,                       -- 1
+	CASE WHEN t.typcategory = 'A' THEN 'ARRAY'
+	     WHEN t.typtype = 'd' THEN format_type(t.typbasetype, NULL)
+	     WHEN t.typtype IN ('e', 'c', 'r', 'm') THEN 'USER-DEFINED'
+	     ELSE format_type(a.atttypid, NULL)
+	END AS data_type,                               -- 2
+	pg_get_expr(d.adbin, d.adrelid) AS column_default, -- 3
+	a.attidentity::text AS identity,                -- 4
+	a.attgenerated::text AS generated               -- 5
+FROM pg_attribute a
+JOIN pg_type t ON t.oid = a.atttypid
+LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
+ORDER BY a.attnum`
+	var columns []ColumnInfoEx
+	err := pg.DB.SelectContext(ctx, &columns, sqlStatement, rel.OID)
 	if err != nil {
 		return nil, err
 	}
@@ -548,6 +576,8 @@ func (pg *Postgres) relPrimaryKey(ctx context.Context, rel Rel) ([]string, error
 	const query = `SELECT a.attname
 	FROM pg_index i
 	JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+	 -- the first indnkeyatts are the key; INCLUDE columns come after
+	 AND array_position(i.indkey::int2[], a.attnum) - array_lower(i.indkey::int2[], 1) < i.indnkeyatts
 	WHERE i.indrelid = $1 AND i.indisprimary
 	ORDER BY array_position(i.indkey::int2[], a.attnum)`
 	var pkColumns []string

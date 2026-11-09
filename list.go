@@ -140,7 +140,7 @@ func (l *tableList) key(a *app, k screen.Key) {
 		return
 	}
 	switch k {
-	case 'q', screen.Ctrl('c'):
+	case 'q':
 		a.quit = true
 	case screen.KeyEsc:
 		if l.filter != "" {
@@ -287,7 +287,7 @@ func (l *tableList) command(a *app, line string) {
 
 var listHelp = []string{
 	"↑↓ j k        move",
-	"PgUp PgDn     a page",
+	"PgUp PgDn ^F ^B  a page",
 	"enter         open the table or view",
 	"/             filter by regular expression, live; tab completes a name",
 	"y             copy the table name to the clipboard",
@@ -299,9 +299,11 @@ var listHelp = []string{
 	"n :view NAME  a new view of yours, written in $EDITOR",
 	"e             edit the view of yours under the cursor",
 	"esc           back (to the database menu)",
+	"^C ^Z ^L      quit, suspend (fg resumes), redraw",
 }
 
-// vimKey reads h j k l as arrows, the way the old interface did.
+// vimKey reads h j k l as arrows and Ctrl-F Ctrl-B as pages, as vi and
+// less do.
 func vimKey(k screen.Key) screen.Key {
 	switch k {
 	case 'j':
@@ -312,6 +314,10 @@ func vimKey(k screen.Key) screen.Key {
 		return screen.KeyLeft
 	case 'l':
 		return screen.KeyRight
+	case screen.Ctrl('f'):
+		return screen.KeyPgDn
+	case screen.Ctrl('b'):
+		return screen.KeyPgUp
 	}
 	return k
 }

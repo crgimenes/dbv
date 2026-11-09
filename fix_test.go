@@ -243,3 +243,57 @@ INSERT INTO dbv_pp VALUES (5, 'p');`)
 		t.Fatalf("partition row: %q %v", v, err)
 	}
 }
+
+func TestCatalogEdges(t *testing.T) {
+	pg := testDB(t, "")
+	mustExec(t, pg, `DROP MATERIALIZED VIEW IF EXISTS dbv_mv; DROP TABLE IF EXISTS dbv_inc, dbv_gen;
+CREATE MATERIALIZED VIEW dbv_mv AS SELECT 1 AS n, 'a'::text AS s;
+CREATE TABLE dbv_inc (id int, note text, CONSTRAINT dbv_inc_pk PRIMARY KEY (id) INCLUDE (note));
+INSERT INTO dbv_inc VALUES (1, NULL);
+CREATE TABLE dbv_gen (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, n int, d int GENERATED ALWAYS AS (n * 2) STORED, tags text[]);`)
+	ctx := context.Background()
+
+	cols, err := pg.ListColumns("dbv_mv")
+	if err != nil || len(cols) != 2 || cols[0].ColumnName != "n" || cols[0].DataType != "integer" {
+		t.Fatalf("materialized view columns: %+v %v", cols, err)
+	}
+	recs, _, total, err := pg.ListRecords(ctx, "dbv_mv", "", 0, 10, "", "")
+	if err != nil || total != 1 || recs[0]["s"] != "a" {
+		t.Fatalf("materialized view rows: %v %d %v", recs, total, err)
+	}
+
+	pk, err := pg.GetPrimaryKeyColumns(ctx, "dbv_inc")
+	if err != nil || len(pk) != 1 || pk[0] != "id" {
+		t.Fatalf("INCLUDE is no part of the key: %v %v", pk, err)
+	}
+	err = pg.UpdateDataCell(ctx, "dbv_inc", "note", "set", []string{"id"}, []any{"1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gcols, err := pg.ListColumns("dbv_gen")
+	if err != nil || gcols[3].DataType != "ARRAY" {
+		t.Fatalf("array type: %+v %v", gcols, err)
+	}
+	ins, err := pg.CreateInsertStatement("dbv_gen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(ins, "DEFAULT") != 2 {
+		t.Fatalf("identity and generated take DEFAULT:\n%s", ins)
+	}
+	mustExec(t, pg, ins) // the template as it comes runs
+}
+
+func TestQueryNonFinite(t *testing.T) {
+	pg := testDB(t, "")
+	res, err := pg.QueryReadOnly(context.Background(), 10, `SELECT 'NaN'::float8 AS a, '-Infinity'::float4 AS b, 1.5::float8 AS c`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	err = encodeJSON(&b, resultJSON(res))
+	if err != nil || !strings.Contains(b.String(), `["NaN","-Infinity",1.5]`) {
+		t.Fatalf("%s %v", b.String(), err)
+	}
+}

@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -27,22 +28,11 @@ func (pg *Postgres) CreateGoStructDefinition(tableName string) (string, error) {
 	}
 	structName := toTitle(strings.ReplaceAll(rel.Name, "_", " "))
 
-	const sqlStatement = `
-        SELECT
-            column_name,
-            data_type
-        FROM information_schema.columns
-        WHERE table_schema = $1 AND table_name = $2
-        ORDER BY column_name;
-    `
-	type simpleColumnInfo struct {
-		ColumnName string `db:"column_name"`
-		DataType   string `db:"data_type"`
-	}
-	var cols []simpleColumnInfo
-	if err := pg.DB.SelectContext(ctx, &cols, sqlStatement, rel.Schema, rel.Name); err != nil {
+	cols, err := pg.relColumns(ctx, rel)
+	if err != nil {
 		return "", fmt.Errorf("error fetching columns: %w", err)
 	}
+	sort.SliceStable(cols, func(i, j int) bool { return cols[i].ColumnName < cols[j].ColumnName })
 	if len(cols) == 0 {
 		return "", fmt.Errorf("no columns found for table %s", tableName)
 	}

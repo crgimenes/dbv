@@ -201,7 +201,7 @@ func (v *runView) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
 
 func (v *runView) key(a *app, k screen.Key) {
 	switch k {
-	case 'q', screen.KeyEsc, screen.Ctrl('c'):
+	case 'q', screen.KeyEsc:
 		a.pop()
 	case 'r', screen.KeyEnter:
 		v.run(a)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -80,6 +81,24 @@ func plain(v any, dataType string) any {
 			return x.Format(time.DateOnly)
 		}
 		return x.Format(time.RFC3339Nano)
+	case float64:
+		return nonFinite(x, v)
+	case float32:
+		return nonFinite(float64(x), v)
+	}
+	return v
+}
+
+// nonFinite is NaN and the infinities as PostgreSQL writes them: JSON has
+// no number for them.
+func nonFinite(f float64, v any) any {
+	switch {
+	case math.IsNaN(f):
+		return "NaN"
+	case math.IsInf(f, 1):
+		return "Infinity"
+	case math.IsInf(f, -1):
+		return "-Infinity"
 	}
 	return v
 }

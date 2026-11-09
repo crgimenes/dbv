@@ -12,6 +12,8 @@ type ColumnInfoEx struct {
 	ColumnName    string         `db:"column_name"`
 	DataType      string         `db:"data_type"`
 	ColumnDefault sql.NullString `db:"column_default"`
+	Identity      string         `db:"identity"`  // "a" always, "d" by default, "" not one
+	Generated     string         `db:"generated"` // "s" stored; "" not one
 }
 
 func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
@@ -20,18 +22,8 @@ func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Retrieve columns with their default values.
-	const sqlStatement = `
-        SELECT
-            column_name,
-            data_type,
-            column_default
-        FROM information_schema.columns
-        WHERE table_schema = $1 AND table_name = $2
-        ORDER BY column_name;  -- initially ordered alphabetically
-    `
-	var cols []ColumnInfoEx
-	if err := pg.DB.SelectContext(ctx, &cols, sqlStatement, rel.Schema, rel.Name); err != nil {
+	cols, err := pg.relColumnsEx(ctx, rel)
+	if err != nil {
 		return "", fmt.Errorf("error fetching columns: %w", err)
 	}
 	if len(cols) == 0 {
@@ -83,11 +75,16 @@ func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
 	var dataList []colData
 	for _, col := range finalCols {
 		val := ""
-		if col.ColumnDefault.Valid {
+		switch {
+		case col.Identity != "" || col.Generated != "":
+			val = "DEFAULT" // the server makes it; GENERATED ALWAYS takes nothing else
+		case col.ColumnDefault.Valid:
 			val = col.ColumnDefault.String
-		} else {
+		default:
 			lowerType := strings.ToLower(col.DataType)
 			switch {
+			case lowerType == "array":
+				val = "'{}'"
 			case strings.Contains(lowerType, "char"), strings.Contains(lowerType, "text"):
 				val = "''"
 			case strings.Contains(lowerType, "int"):

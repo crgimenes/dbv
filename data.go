@@ -48,6 +48,7 @@ type tableData struct {
 	total     int
 	where     string
 	order     []orderBy
+	search    string // the last / pattern, for n and N
 
 	row, col   int // the cursor, in rows and header
 	first, off int // first row shown, first column shown
@@ -408,13 +409,16 @@ func (d *tableData) draw(_ *app, c *screen.Canvas, top, left, rows, cols int) {
 }
 
 func (d *tableData) cell() string {
-	if d.row >= len(d.rows) {
+	if d.row >= len(d.rows) || d.col >= len(d.rows[d.row]) {
 		return ""
 	}
 	return d.rows[d.row][d.col]
 }
 
 func (d *tableData) key(a *app, k screen.Key) {
+	if len(d.header) == 0 && k != screen.KeyEsc && k != 'q' && k != screen.KeyBackspace && k != ':' && k != '?' {
+		return // SELECT FROM t: rows, no columns; nothing for a cell key to act on
+	}
 	_, h := a.t.Size()
 	page := max(1, h-8)
 	switch vimKey(k) {
@@ -442,8 +446,19 @@ func (d *tableData) key(a *app, k screen.Key) {
 		d.row = max(0, len(d.rows)-1)
 	case screen.KeyEsc, 'q', screen.KeyBackspace:
 		a.pop()
-	case screen.KeyEnter, 'e', 'v':
+	case 'e', 'v': // v: less's key for $EDITOR
 		d.editCell(a)
+	case '/':
+		a.ask("/", d.search, func(a *app, line string) {
+			if line != "" {
+				d.search = line
+			}
+			d.find(a, 1, false)
+		})
+	case 'n':
+		d.find(a, 1, true)
+	case 'N':
+		d.find(a, -1, true)
 	case 'y':
 		if d.row < len(d.rows) {
 			a.copyText(d.header[d.col], d.cell())
@@ -452,7 +467,7 @@ func (d *tableData) key(a *app, k screen.Key) {
 		if d.row < len(d.rows) {
 			a.copyText("the row", d.rowTSV())
 		}
-	case 'p':
+	case 'p', screen.KeyEnter: // Enter opens, never writes
 		err := a.page(d.cell())
 		if err != nil {
 			a.fail(err)
@@ -478,6 +493,56 @@ func (d *tableData) key(a *app, k screen.Key) {
 	}
 	d.row = max(0, d.row)
 	d.more(a, page)
+}
+
+// find moves the cursor to the next cell, in dir, that the search's regular
+// expression matches, as / n N do in less and vi: row by row, the shown
+// columns left to right, wrapping at the end. A new search may stay on the
+// cell it starts from; n and N move off it first. Only the rows read so far
+// are searched.
+func (d *tableData) find(a *app, dir int, next bool) {
+	if d.search == "" {
+		a.say(kit.Warn, "no search yet: / starts one")
+		return
+	}
+	re, err := regexp.Compile(d.search)
+	if err != nil {
+		a.say(kit.Err, "/%s: %v", d.search, err)
+		return
+	}
+	cols := []int{}
+	for i := range d.header {
+		if d.shown(i) {
+			cols = append(cols, i)
+		}
+	}
+	n := len(d.rows) * len(cols)
+	if n == 0 {
+		return
+	}
+	at := d.row*len(cols) + max(0, slices.Index(cols, d.col))
+	start := 0
+	if next {
+		start = 1
+	}
+	for k := start; k < n+start; k++ {
+		i := ((at+dir*k)%n + n) % n
+		r, c := i/len(cols), cols[i%len(cols)]
+		if !re.MatchString(d.rows[r][c]) {
+			continue
+		}
+		d.row, d.col = r, c
+		wrapped := (dir > 0 && i < at) || (dir < 0 && i > at)
+		if wrapped {
+			a.say(kit.Plain, "/%s · wrapped", d.search)
+		}
+		return
+	}
+	more := ""
+	if !d.query && len(d.rows) < d.total {
+		more = "; :where searches the whole table"
+	}
+	a.say(kit.Warn, "/%s: not in the %d rows read%s", d.search, len(d.rows), more)
 }
 
 // more loads the next page when the cursor comes within a page of the end
@@ -650,7 +715,7 @@ func (d *tableData) command(a *app, line string) {
 	cmd := strings.TrimSpace(line)
 	switch {
 	case cmd == "":
-	case cmd == "q":
+	case cmd == "q" || cmd == "quit":
 		a.pop()
 	case cmd == "order" && d.query:
 		d.order = nil
@@ -688,7 +753,7 @@ func (d *tableData) command(a *app, line string) {
 	}
 }
 
-var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "view", "export", "q"}
+var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "view", "export", "quit"}
 
 // saveAsView starts a view of yours from what the grid shows: a table's
 // SELECT (shown columns, filter, order), a view's own SQL.
@@ -756,7 +821,7 @@ func (d *tableData) run(a *app, what string) {
 	case "struct":
 		text, err = a.pg.CreateGoStructDefinition(d.name)
 	case "json":
-		text, err = rowJSON(d.header, d.rowValues())
+		text, err = rowJSON(d.columns, d.rowValues())
 	case "update":
 		if d.readOnly {
 			a.say(kit.Err, "no primary key: update not allowed")
@@ -908,9 +973,10 @@ func (d *tableData) reload(a *app) {
 
 var dataHelp = []string{
 	"↑↓←→ h j k l   move          g G       first, last row",
-	"PgUp PgDn      a page        Home End  first, last column",
-	"enter e v      edit the cell in $EDITOR (saved to the table)",
-	"p              view the cell in $PAGER",
+	"PgUp PgDn ^F ^B  a page      Home End  first, last column",
+	"enter p        view the cell in $PAGER",
+	"e v            edit the cell in $EDITOR (saved to the table)",
+	"/ n N          search the rows read (regular expression), next, previous",
 	"y Y            copy the cell, the row (tab-separated) to the clipboard",
 	"o O            order by this column, ascending or descending; again undoes",
 	"x              hide this column (:show brings them all back)",
@@ -921,5 +987,6 @@ var dataHelp = []string{
 	":sql           write SQL in $EDITOR and run it (writes too); starts as the grid's SELECT",
 	":view NAME     keep the grid's SELECT as a view of yours, edited first",
 	":export F.csv  every row of the filter (or .json), to a new file",
-	"esc q          back to the tables",
+	"esc q :q       back to the tables",
+	"^C ^Z ^L       quit, suspend (fg resumes), redraw",
 }

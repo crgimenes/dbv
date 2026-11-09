@@ -86,7 +86,7 @@ func TestTabMenu(t *testing.T) {
 		t.Fatalf("first item: %q", a.input.String())
 	}
 	a.handle(screen.KeyBackTab)
-	if a.input.String() != "q" {
+	if a.input.String() != "quit" {
 		t.Fatalf("back wraps to the last: %q", a.input.String())
 	}
 	a.handle(screen.KeyTab)

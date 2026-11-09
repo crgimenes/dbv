@@ -129,7 +129,7 @@ func (s *selector) key(a *app, k screen.Key) {
 	}
 	name := s.current()
 	switch {
-	case k == 'q' || k == screen.Ctrl('c'):
+	case k == 'q':
 		a.quit = true
 	case s.table != "" && (k == screen.KeyEsc || k == screen.KeyTab || k == screen.KeyBackTab || k == screen.KeyBackspace):
 		s.table, s.list.Cursor = "", s.keepT

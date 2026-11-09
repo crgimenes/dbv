@@ -8,6 +8,12 @@ import (
 	"syscall"
 )
 
+// stopSelf is Ctrl-Z: SIGTSTP to the process group, as a shell's job
+// control expects; it returns once the job is continued (fg).
+func stopSelf() error {
+	return syscall.Kill(0, syscall.SIGTSTP)
+}
+
 // writeOutput replaces the selector's file in /tmp, a directory everyone
 // writes to: a symlink planted there is refused (O_NOFOLLOW), and so is a
 // file someone else owns, before anything is truncated.
