@@ -14,7 +14,7 @@ func TestListTab(t *testing.T) {
 	a := &app{views: []view{l}}
 	a.ask("/", "", func(a *app, line string) { l.apply(a, line) })
 	a.onEdit = func(a *app, line string) { l.apply(a, line) }
-	a.onTab, a.onPick = tableNames(l.all), func(name string) { l.table.Cursor = indexOfTable(l.shown, name, l.table.Cursor) }
+	a.onTab, a.onPick = tableNames(l.all), func(name string) { l.table.Cursor = indexOfTable(l.shown, name, "", l.table.Cursor) }
 	a.input.Set("ord")
 	a.handle(screen.KeyTab) // common part, no space: the filter follows
 	if a.input.String() != "order" || len(l.shown) != 2 {

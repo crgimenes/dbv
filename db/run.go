@@ -28,14 +28,25 @@ type Statement struct {
 // unless the text opens its own. Writes are allowed; this is the user
 // typing SQL. Each statement keeps at most limit rows.
 func (pg *Postgres) Run(ctx context.Context, sqlText string, limit int) ([]Statement, error) {
-	return pg.run(ctx, sqlText, limit, false)
+	return pg.run(ctx, sqlText, limit, "")
 }
 
 // RunReadOnly is Run with the session read only: every transaction the
 // text runs, its own included, refuses a write (IsReadOnly says so). It
 // guards against a slip, not against text that turns it off on purpose.
 func (pg *Postgres) RunReadOnly(ctx context.Context, sqlText string, limit int) ([]Statement, error) {
-	return pg.run(ctx, sqlText, limit, true)
+	return pg.run(ctx, sqlText, limit, "SET default_transaction_read_only = on")
+}
+
+// LockWait is how long RunDDL waits for a lock. ALTER TABLE waits for an
+// exclusive one, and while it waits every query on the table queues
+// behind it: on a busy table, failing soon is the lesser harm.
+const LockWait = "5s"
+
+// RunDDL is Run for a change of structure: it gives up when a lock does
+// not come within LockWait.
+func (pg *Postgres) RunDDL(ctx context.Context, sqlText string) ([]Statement, error) {
+	return pg.run(ctx, sqlText, 1, "SET lock_timeout = '"+LockWait+"'")
 }
 
 // IsReadOnly is the server refusing a write in a read-only transaction.
@@ -44,7 +55,9 @@ func IsReadOnly(err error) bool {
 	return errors.As(err, &pe) && pe.Code == "25006"
 }
 
-func (pg *Postgres) run(ctx context.Context, sqlText string, limit int, readOnly bool) ([]Statement, error) {
+// run sends sqlText on a connection setup prepared first; a connection
+// with a setup is closed after, never handed out again.
+func (pg *Postgres) run(ctx context.Context, sqlText string, limit int, setup string) ([]Statement, error) {
 	conn, err := pg.DB.Conn(ctx)
 	if err != nil {
 		return nil, err
@@ -56,8 +69,8 @@ func (pg *Postgres) run(ctx context.Context, sqlText string, limit int, readOnly
 		if !ok {
 			return errors.New("not a pgx connection")
 		}
-		if readOnly {
-			_, err := c.Conn().Exec(ctx, "SET default_transaction_read_only = on")
+		if setup != "" {
+			_, err := c.Conn().Exec(ctx, setup)
 			if err != nil {
 				return err
 			}
@@ -110,8 +123,8 @@ func (pg *Postgres) run(ctx context.Context, sqlText string, limit int, readOnly
 		}
 		return nil
 	})
-	if readOnly {
-		_ = conn.Raw(func(any) error { return driver.ErrBadConn }) // closed: the pool must not hand out a read-only session
+	if setup != "" {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn }) // closed: the pool must not hand out a session set up for one use
 	}
 	return out, err
 }

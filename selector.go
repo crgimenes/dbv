@@ -34,7 +34,7 @@ func newSelector(out string) func(a *app) view {
 			a.fail(err)
 		}
 		for _, t := range tables {
-			if t.Type != userViewType {
+			if t.Type != queryType {
 				s.tables = append(s.tables, t)
 			}
 		}
@@ -150,7 +150,7 @@ func (s *selector) key(a *app, k screen.Key) {
 	case k == '/':
 		a.ask("/", s.filter, func(a *app, line string) { s.apply(a, line) })
 		a.onEdit = func(a *app, line string) { s.apply(a, line) }
-		a.onTab, a.onPick = tableNames(s.tables), func(name string) { s.list.Cursor = indexOfTable(s.shownT, name, s.list.Cursor) }
+		a.onTab, a.onPick = tableNames(s.tables), func(name string) { s.list.Cursor = indexOfTable(s.shownT, name, "", s.list.Cursor) }
 	}
 }
 

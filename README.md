@@ -13,7 +13,9 @@
 - **Go Struct Generation**: Generate Go struct definitions based on table columns (mapping PostgreSQL types to Go types).
 - **SQL**: `:sql` writes SQL in `$EDITOR` and runs it, several statements in one transaction (a `BEGIN` left open is rolled back); rows that come back show as a grid. Text left unchanged runs nothing.
 - **Export**: `:export FILE.csv` or `FILE.json` writes every row of the current filter; `y`/`Y` copy a cell or a row to the clipboard.
-- **User Views**: `.sql` files in a views directory appear in the table list; `{{name:type:title:order}}` tokens become a form to fill in before the query runs (read only).
+- **Queries**: `.sql` files of yours in a views directory appear in the table list as `query`; `{{name:type:title:order}}` tokens become a form to fill in before the query runs (read only). "View" is only ever a view in the database.
+- **Table Structure**: `e` on a table (or `:structure` on its grid) lists its columns with type, null, default, key and comment; each change is the `ALTER TABLE` for it, written in `$EDITOR`.
+- **Database Views**: `e` on a view opens it in `$EDITOR` as `CREATE OR REPLACE VIEW`, and `:view NAME` writes a new one; what is saved runs, and an error brings the text back with the error on top.
 - **SSH Tunnel**: `ssh+postgres://` URLs reach a database through ssh, reading `~/.ssh/config`.
 - **Command Line for Scripts and Agents**: one-shot, read-only commands with text or JSON output.
 - **Filo Configuration**: Configure database connections using [Filo](https://github.com/crgimenes/filo) scripts (e.g., `init.filo`).
@@ -74,7 +76,7 @@ locally; `sshalias` takes user, host, port and key from `~/.ssh/config`
 (database "ssh+postgres://user:pass@db:5432/app?sshalias=bastion&localport=5433&sslmode=disable" "App via bastion")
 ```
 
-A user view is `NAME.sql` in the views directory (the third argument of
+A query of yours is `NAME.sql` in the views directory (the third argument of
 `database`). Tokens `{{name:type:title:order}}` are asked for in a form and
 replaced by what is typed; only `name` is required:
 
@@ -155,7 +157,10 @@ screen you are on.
 Table list:
 
 - `↑↓` / `j k`, `PgUp PgDn`, `Home End`: move
-- `Enter`: open the table or view
+- `Enter`: open the table or view; a query runs (its form first)
+- `e`: edit what is under the cursor: a table's structure, a view's definition, a query's file
+- `n`, `:query NAME`: a new query of yours; `:view NAME`: a new view in the database; `:table NAME`: a new table
+- `:rename`: rename the table, view or query under the cursor
 - `/`: filter by regular expression, live (`Esc` clears)
 - `y`: copy the table name to the clipboard
 - `:`: command line; `?`: help
@@ -173,12 +178,22 @@ Table data:
 - `/`, `n`, `N`: search the rows read so far (regular expression), next, previous
 - `y`, `Y`: copy the cell, or the row as tab-separated text, to the clipboard (through the terminal, OSC 52; works over ssh, and in tmux with `set -g set-clipboard on`)
 - `o`, `O`: order by this column, ascending or descending; the same key again drops that column from the order (the others stay), the other key flips its direction
-- On a user view or a `:sql` result, `o`/`O` sort the rows in memory (NULLs as PostgreSQL puts them; `:order` restores how they came), and `:sql` starts from the view's SQL with its parameters filled
-- `n` or `:view NAME` on the table list: a new view of yours, written in `$EDITOR` and kept in the connection's views directory (the one its config names, else `views/<title>` under dbv's config directory); `:wq` keeps it, `:q!` keeps nothing. `e` edits the view under the cursor. `:view NAME` on a grid starts the view from the grid's SELECT
+- On a query or a `:sql` result, `o`/`O` sort the rows in memory (NULLs as PostgreSQL puts them; `:order` restores how they came), and `:sql` starts from the query's SQL with its parameters filled
+- `n` or `:query NAME` on the table list: a new query of yours, written in `$EDITOR` and kept in the connection's views directory (the one its config names, else `views/<title>` under dbv's config directory); `:wq` keeps it, `:q!` keeps nothing. `:query NAME` on a grid starts the query from the grid's SELECT
+- `:view NAME`, on the table list or a grid (starting from its SELECT): a new view in the database, written in `$EDITOR` as `CREATE VIEW` and run when saved. `e` on a view opens `CREATE OR REPLACE VIEW` with its options and its SELECT as the server prints it: columns can be added at the end; to drop or rename one, start the text with `DROP VIEW`. A failed statement opens again with the error on top, under the `-- dbv: db=` line; quitting without saving runs nothing. A materialized view has no `OR REPLACE`: use `:sql`
+- `:structure`: the table's columns (below)
 - `x`: hide this column (`:show` brings them all back); `:sql` on a table starts as the grid's SELECT: its shown columns, `:where` and order
 - `I`, `S`, `J`, `U`: INSERT template, Go struct, JSON of the row, UPDATE of the row (INSERT and UPDATE run when saved changed)
 - `:`: command line; `?`: help
 - `Esc`, `q`, `:q`: back to the table list
+
+Table structure (`e` on a table in the list, `:structure` on its grid):
+
+- `↑↓` / `j k` move between columns of the table, `←→` / `h l` between fields (name, type, null, default, key, comment)
+- `e`, `Enter`: the statement that changes the field under the cursor opens in `$EDITOR`: `RENAME COLUMN`, `ALTER COLUMN … TYPE` (add `USING` where no cast is automatic), `SET`/`DROP NOT NULL`, `SET`/`DROP DEFAULT`, `COMMENT ON COLUMN`
+- `a`, `:add NAME`: `ADD COLUMN`; `D`: `DROP COLUMN`
+- Save and quit the editor to run the statement, edited or not; quit without saving and nothing runs. A failed statement opens again with the error on top. Anything that drops, deletes or changes a type asks `y/N` first. The statement waits at most 5 s for its lock, so a long transaction on the table fails it instead of queueing every query behind it. The grids of the table read their columns again
+- `:table NAME` on the list writes `CREATE TABLE` with an identity key to start from; the primary key, indexes and constraints are changed through `:sql` for now
 
 ## SQL files in Neovim
 

@@ -65,9 +65,27 @@ func QuoteName(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
-// quoteLiteral is an escape-string literal, E'...': it reads the same
+// QuoteLiteral is an escape-string literal, E'...': it reads the same
 // whatever standard_conforming_strings says.
-func quoteLiteral(s string) string {
+func QuoteLiteral(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	return "E'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// ViewDef is a view as a statement that puts it back as it is: CREATE OR
+// REPLACE VIEW with its options (security_barrier, check_option) and its
+// SELECT as the server prints it.
+func (pg *Postgres) ViewDef(ctx context.Context, rel Rel) (string, error) {
+	const q = `SELECT 'CREATE OR REPLACE VIEW ' || c.oid::regclass::text
+	|| COALESCE(' WITH (' || array_to_string(c.reloptions, ', ') || ')', '')
+	|| E' AS\n' || rtrim(pg_get_viewdef(c.oid, true), E'; \n')
+	|| E';\n'
+FROM pg_class c
+WHERE c.oid = $1 AND c.relkind = 'v'`
+	var def string
+	err := pg.DB.QueryRowContext(ctx, q, rel.OID).Scan(&def)
+	if err != nil {
+		return "", fmt.Errorf("no view %s: %w", rel.SQL, err)
+	}
+	return def, nil
 }

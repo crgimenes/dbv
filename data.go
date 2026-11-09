@@ -34,8 +34,8 @@ type tableData struct {
 	name      string
 	pk        string // "-" or empty: read only
 	readOnly  bool
-	query     bool   // rows came from a user view's SQL: all loaded, its own order
-	sql       string // a user view's SQL as it ran, for :sql to start from
+	query     bool   // rows came from a query's SQL: all loaded, its own order
+	sql       string // a query's SQL as it ran, for :sql to start from
 	base      *queryRows
 	columns   []db.ColumnInfo
 	header    []string
@@ -43,8 +43,8 @@ type tableData struct {
 	hidden    map[string]bool
 	rows      [][]string
 	nulls     [][]bool // a NULL, which shows as "NULL" but is not that text
-	raw       [][]any  // a view's rows as the driver typed them, for :export
-	truncated bool     // a view's or :sql's rows stopped at the cap
+	raw       [][]any  // a query's rows as the driver typed them, for :export
+	truncated bool     // a query's or :sql's rows stopped at the cap
 	total     int
 	where     string
 	order     []orderBy
@@ -65,7 +65,7 @@ const (
 	queryTimeout = 2 * time.Minute
 )
 
-// newQueryData shows a user view's answer. The view runs in a READ ONLY
+// newQueryData shows a query's answer. The query runs in a READ ONLY
 // transaction: a file in the views directory is a query, never a change.
 func newQueryData(a *app, name, sql string) (*tableData, error) {
 	var res db.Result
@@ -721,7 +721,7 @@ func (d *tableData) command(a *app, line string) {
 		d.order = nil
 		d.sortHere()
 	case (cmd == "where" || strings.HasPrefix(cmd, "where ")) && d.query:
-		a.say(kit.Warn, "a view's query has its own where")
+		a.say(kit.Warn, "a query has its own where")
 	case cmd == "where" || strings.HasPrefix(cmd, "where "):
 		before := d.where
 		d.where = strings.TrimSpace(strings.TrimPrefix(cmd, "where"))
@@ -744,8 +744,21 @@ func (d *tableData) command(a *app, line string) {
 		d.hidden = nil
 	case cmd == "sql":
 		runSQL(a)
+	case cmd == "structure" && !d.query:
+		v, err := newStructView(a, d.name)
+		if err != nil {
+			a.fail(err)
+			return
+		}
+		a.push(v)
+	case cmd == "query" || strings.HasPrefix(cmd, "query "):
+		d.keep(a, strings.TrimSpace(strings.TrimPrefix(cmd, "query")), queryType, func(a *app, name, body string, after func(a *app)) {
+			if editQuery(a, name, body) {
+				after(a)
+			}
+		})
 	case cmd == "view" || strings.HasPrefix(cmd, "view "):
-		d.saveAsView(a, strings.TrimSpace(strings.TrimPrefix(cmd, "view")))
+		d.keep(a, strings.TrimSpace(strings.TrimPrefix(cmd, "view")), "view", createDBView)
 	case strings.HasPrefix(cmd, "export"):
 		d.export(a, strings.TrimPrefix(cmd, "export"))
 	default:
@@ -753,13 +766,14 @@ func (d *tableData) command(a *app, line string) {
 	}
 }
 
-var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "view", "export", "quit"}
+var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "query", "view", "structure", "export", "quit"}
 
-// saveAsView starts a view of yours from what the grid shows: a table's
-// SELECT (shown columns, filter, order), a view's own SQL.
-func (d *tableData) saveAsView(a *app, name string) {
+// keep starts a query of yours, or a view in the database, from what the
+// grid shows: a table's SELECT (shown columns, filter, order), a query's
+// own SQL.
+func (d *tableData) keep(a *app, name, typ string, start func(a *app, name, body string, after func(a *app))) {
 	if name == "" {
-		a.say(kit.Warn, ":view NAME")
+		a.say(kit.Warn, "a name: :query NAME, :view NAME")
 		return
 	}
 	body := d.sql
@@ -778,7 +792,7 @@ func (d *tableData) saveAsView(a *app, name string) {
 		a.say(kit.Warn, "a :sql result has no SQL of its own to keep; :sql shows the last one")
 		return
 	}
-	editView(a, name, strings.TrimSpace(body))
+	start(a, name, strings.TrimSpace(body), func(a *app) { listSaved(a, name, typ, true) })
 }
 
 // completions are what Tab offers at the grid's ":": a command first, then
@@ -985,7 +999,9 @@ var dataHelp = []string{
 	":order         clear the order",
 	":insert :struct :json :update  the same as I S J U",
 	":sql           write SQL in $EDITOR and run it (writes too); starts as the grid's SELECT",
-	":view NAME     keep the grid's SELECT as a view of yours, edited first",
+	":query NAME    keep the grid's SELECT as a query of yours, edited first",
+	":view NAME     create a view in the database from the grid's SELECT",
+	":structure     the table's columns: add, rename, type, default, drop",
 	":export F.csv  every row of the filter (or .json), to a new file",
 	"esc q :q       back to the tables",
 	"^C ^Z ^L       quit, suspend (fg resumes), redraw",

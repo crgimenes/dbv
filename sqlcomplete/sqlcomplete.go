@@ -248,6 +248,22 @@ func FirstWords(text string) []string {
 	return out
 }
 
+// AllWords is every bare word of text, in upper case, outside comments and
+// strings, read every way FirstWords reads it: a word one reading hides is
+// still found.
+func AllWords(text string) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range []reading{{false, true}, {true, true}, {false, false}, {true, false}} {
+		toks, _ := lex(text, r)
+		for _, t := range toks {
+			if t.kind == tWord {
+				out[strings.ToUpper(t.text)] = true
+			}
+		}
+	}
+	return out
+}
+
 func skipTo(s string, i int, end string) int {
 	k := strings.Index(s[i:], end)
 	if k < 0 {

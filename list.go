@@ -20,7 +20,8 @@ type TableInfo struct {
 	PrimaryKey string
 }
 
-const userViewType = "User defined view"
+// queryType is a .sql file of the user's; "view" is the database's alone.
+const queryType = "query"
 
 func getTableList(pg *db.Postgres) ([]TableInfo, error) {
 	lt, err := pg.ListTablesAndViews()
@@ -49,7 +50,7 @@ func getTableList(pg *db.Postgres) ([]TableInfo, error) {
 		if !f.IsDir() && filepath.Ext(f.Name()) == ".sql" {
 			views = append(views, TableInfo{
 				Name:       strings.TrimSuffix(f.Name(), ".sql"),
-				Type:       userViewType,
+				Type:       queryType,
 				Size:       "-",
 				PrimaryKey: "-",
 			})
@@ -151,7 +152,7 @@ func (l *tableList) key(a *app, k screen.Key) {
 	case '/':
 		a.ask("/", l.filter, func(a *app, line string) { l.apply(a, line) })
 		a.onEdit = func(a *app, line string) { l.apply(a, line) }
-		a.onTab, a.onPick = tableNames(l.all), func(name string) { l.table.Cursor = indexOfTable(l.shown, name, l.table.Cursor) }
+		a.onTab, a.onPick = tableNames(l.all), func(name string) { l.table.Cursor = indexOfTable(l.shown, name, "", l.table.Cursor) }
 	case ':':
 		a.ask(":", "", l.command)
 		a.onTab = func(line string) completion { return commandCompletion(line, listCommands) }
@@ -162,13 +163,9 @@ func (l *tableList) key(a *app, k screen.Key) {
 			a.copyText("the name", l.shown[l.table.Cursor].Name)
 		}
 	case 'n':
-		l.newView(a, "")
+		l.newQuery(a, "")
 	case 'e':
-		if len(l.shown) == 0 || l.shown[l.table.Cursor].Type != userViewType {
-			a.say(kit.Warn, "e edits a view of yours; n makes one")
-			return
-		}
-		l.saved(a, l.shown[l.table.Cursor].Name, editView(a, l.shown[l.table.Cursor].Name, ""))
+		l.edit(a)
 	case screen.KeyEnter:
 		l.open(a)
 	}
@@ -179,8 +176,8 @@ func (l *tableList) open(a *app) {
 		return
 	}
 	t := l.shown[l.table.Cursor]
-	if t.Type == userViewType {
-		openUserView(a, t.Name)
+	if t.Type == queryType {
+		openQuery(a, t.Name)
 		return
 	}
 	v, err := newTableData(a, t.Name, t.PrimaryKey)
@@ -191,31 +188,70 @@ func (l *tableList) open(a *app) {
 	a.push(v)
 }
 
-var listCommands = []string{"clear", "reload", "rename", "view", "sql", "help", "quit"}
-
-// newView asks for a name when there is none, then opens the new view.
-func (l *tableList) newView(a *app, name string) {
-	if name != "" {
-		l.saved(a, name, editView(a, name, ""))
+// edit opens what is under the cursor as text: a query's file, a view's
+// CREATE OR REPLACE.
+func (l *tableList) edit(a *app) {
+	if len(l.shown) == 0 {
 		return
 	}
-	a.ask("new view: ", "", func(a *app, name string) {
+	t := l.shown[l.table.Cursor]
+	switch t.Type {
+	case queryType:
+		l.saved(a, t.Name, queryType, editQuery(a, t.Name, ""))
+	case "view":
+		editDBView(a, t.Name, func(a *app) { l.saved(a, t.Name, "view", true) })
+	case "table":
+		v, err := newStructView(a, t.Name)
+		if err != nil {
+			a.fail(err)
+			return
+		}
+		a.push(v)
+	case "materialized view":
+		a.say(kit.Warn, "a materialized view has no OR REPLACE: :sql with DROP and CREATE")
+	default:
+		a.say(kit.Warn, "e edits a table, a view or a query")
+	}
+}
+
+var listCommands = []string{"clear", "reload", "rename", "query", "view", "table", "sql", "help", "quit"}
+
+// newQuery asks for a name when there is none, then opens the new query.
+func (l *tableList) newQuery(a *app, name string) {
+	if name != "" {
+		l.saved(a, name, queryType, editQuery(a, name, ""))
+		return
+	}
+	a.ask("new query: ", "", func(a *app, name string) {
 		if strings.TrimSpace(name) != "" {
-			l.saved(a, name, editView(a, name, ""))
+			l.saved(a, name, queryType, editQuery(a, name, ""))
 		}
 	})
 }
 
-// saved reads the list again after a view was written, the cursor on it.
-func (l *tableList) saved(a *app, name string, ok bool) {
+// saved reads the list again after a query or a view was written, the
+// cursor on it.
+func (l *tableList) saved(a *app, name, typ string, ok bool) {
 	if !ok {
 		return
 	}
 	note, tone := a.note, a.tone
 	l.reload(a)
-	name, _ = viewName(name)
-	l.table.Cursor = indexOfTable(l.shown, name, l.table.Cursor)
-	a.note, a.tone = note, tone // the reload must not eat "view saved"
+	if typ == queryType {
+		name, _ = queryName(name)
+	}
+	l.table.Cursor = indexOfTable(l.shown, name, typ, l.table.Cursor)
+	a.note, a.tone = note, tone // the reload must not eat "query saved"
+}
+
+// listSaved is saved for the table list under the screens on top of it.
+func listSaved(a *app, name, typ string, ok bool) {
+	for _, v := range a.views {
+		l, isList := v.(*tableList)
+		if isList {
+			l.saved(a, name, typ, ok)
+		}
+	}
 }
 
 // tableNames is Tab in a / filter: the names as they are, nothing after,
@@ -228,10 +264,11 @@ func tableNames(tables []TableInfo) func(string) completion {
 	return func(string) completion { return completion{names: names} }
 }
 
-// indexOfTable is name's row in shown, at when it is not there.
-func indexOfTable(shown []TableInfo, name string, at int) int {
+// indexOfTable is the row of name of type typ (any type when "") in
+// shown, at when it is not there: a query and a view may share a name.
+func indexOfTable(shown []TableInfo, name, typ string, at int) int {
 	for i, t := range shown {
-		if t.Name == name {
+		if t.Name == name && (typ == "" || t.Type == typ) {
 			return i
 		}
 	}
@@ -253,32 +290,52 @@ func (l *tableList) command(a *app, line string) {
 		l.reload(a)
 	case "sql":
 		runSQL(a)
-	case "view":
-		l.newView(a, "")
+	case "query":
+		l.newQuery(a, "")
+	case "view", "table":
+		a.say(kit.Warn, ":%s NAME", cmd)
 	case "rename":
 		if len(l.shown) == 0 {
 			a.say(kit.Warn, "no table selected")
 			return
 		}
-		old := l.shown[l.table.Cursor].Name
+		old, typ := l.shown[l.table.Cursor].Name, l.shown[l.table.Cursor].Type
 		a.ask("rename "+old+" to: ", old, func(a *app, name string) {
 			name = strings.TrimSpace(name)
 			if name == "" || name == old {
 				a.say(kit.Warn, "same or empty name: nothing renamed")
 				return
 			}
-			err := a.pg.RenameTable(old, name)
+			rename := a.pg.RenameTable
+			if typ == queryType {
+				rename = renameQuery
+			}
+			err := rename(old, name)
 			if err != nil {
 				a.fail(err)
 				return
 			}
 			l.reload(a)
+			if typ == queryType {
+				name, _ = queryName(name)
+			}
+			l.table.Cursor = indexOfTable(l.shown, name, typ, l.table.Cursor)
 			a.say(kit.OK, "%s renamed to %s", old, name)
 		})
 	default:
-		name, ok := strings.CutPrefix(cmd, "view ")
+		name, ok := strings.CutPrefix(cmd, "query ")
 		if ok {
-			l.newView(a, name)
+			l.newQuery(a, name)
+			return
+		}
+		name, ok = strings.CutPrefix(cmd, "table ")
+		if ok {
+			createTable(a, name, func(a *app) { l.saved(a, strings.TrimSpace(name), "table", true) })
+			return
+		}
+		name, ok = strings.CutPrefix(cmd, "view ")
+		if ok {
+			createDBView(a, name, "", func(a *app) { l.saved(a, strings.TrimSpace(name), "view", true) })
 			return
 		}
 		a.say(kit.Err, "unknown command %q (:help)", cmd)
@@ -288,16 +345,19 @@ func (l *tableList) command(a *app, line string) {
 var listHelp = []string{
 	"↑↓ j k        move",
 	"PgUp PgDn ^F ^B  a page",
-	"enter         open the table or view",
+	"enter         open the table or view; a query runs (its form first)",
 	"/             filter by regular expression, live; tab completes a name",
 	"y             copy the table name to the clipboard",
 	":q :quit      quit",
 	":clear        clear the filter",
 	":reload       read the table list again",
-	":rename       rename the table under the cursor",
+	":rename       rename the table, view or query under the cursor",
 	":sql          write SQL in $EDITOR and run it (writes too)",
-	"n :view NAME  a new view of yours, written in $EDITOR",
-	"e             edit the view of yours under the cursor",
+	"n :query NAME a new query of yours, written in $EDITOR",
+	":view NAME    a new view in the database, written in $EDITOR",
+	"e             edit what is under the cursor: a table's structure,",
+	"              a view's CREATE OR REPLACE, a query's file",
+	":table NAME   a new table, written in $EDITOR as CREATE TABLE",
 	"esc           back (to the database menu)",
 	"^C ^Z ^L      quit, suspend (fg resumes), redraw",
 }

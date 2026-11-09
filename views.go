@@ -13,9 +13,9 @@ import (
 	"github.com/crgimenes/dbv/db"
 )
 
-// viewsDirFor is where a connection's views live: the directory its config
+// viewsDirFor is where a connection's queries live: the directory its config
 // names, else one of its own under dbv's config directory, made when the
-// first view is saved.
+// first query is saved.
 func viewsDirFor(cfg db.DBConfig) string {
 	if cfg.ViewsPath != "" {
 		return cfg.ViewsPath
@@ -45,36 +45,36 @@ func slug(title string) string {
 	return s
 }
 
-// viewName checks a name typed for a view: a file name in the views
+// queryName checks a name typed for a query: a file name in the views
 // directory, never a path out of it.
-func viewName(name string) (string, error) {
+func queryName(name string) (string, error) {
 	name = strings.TrimSuffix(strings.TrimSpace(name), ".sql")
 	switch {
 	case name == "":
-		return "", errors.New("a view needs a name")
+		return "", errors.New("a query needs a name")
 	case strings.ContainsAny(name, `/\`+"\x00") || strings.HasPrefix(name, "."):
-		return "", fmt.Errorf("%q: a view's name is a file name, no / and no leading dot", name)
+		return "", fmt.Errorf("%q: a query's name is a file name, no / and no leading dot", name)
 	}
 	return name, nil
 }
 
-// viewTemplate leaves the view's name out: a name may hold braces, which
+// queryTemplate leaves the query's name out: a name may hold braces, which
 // would ask for a parameter.
-func viewTemplate(body string) string {
+func queryTemplate(body string) string {
 	if body == "" {
 		body = "SELECT "
 	}
 	return "-- dbv: db=" + DBTitle + "\n" +
-		"-- A view of yours: save and quit to keep it, quit without saving and\n" +
+		"-- A query of yours: save and quit to keep it, quit without saving and\n" +
 		"-- nothing is kept. Double-brace parameter tokens become a form.\n\n" +
 		body + "\n"
 }
 
-// editView opens view name in $EDITOR, a new one starting from body (a
+// editQuery opens query name in $EDITOR, a new one starting from body (a
 // grid's SELECT, or nothing), and keeps what is saved. It says whether a
 // file was written.
-func editView(a *app, name, body string) bool {
-	name, err := viewName(name)
+func editQuery(a *app, name, body string) bool {
+	name, err := queryName(name)
 	if err != nil {
 		a.fail(err)
 		return false
@@ -92,7 +92,7 @@ func editView(a *app, name, body string) bool {
 	}
 	text := string(old)
 	if !exists {
-		text = viewTemplate(body)
+		text = queryTemplate(body)
 	}
 	raw, wrote, err := a.externalSaved(envOr("EDITOR", "vi"), text)
 	if err != nil {
@@ -119,7 +119,7 @@ func editView(a *app, name, body string) bool {
 		a.fail(err)
 		return false
 	}
-	a.say(kit.OK, "view %s saved in %s", strings.TrimSuffix(filepath.Base(path), ".sql"), tildePath(userViewsDir))
+	a.say(kit.OK, "query %s saved in %s", strings.TrimSuffix(filepath.Base(path), ".sql"), tildePath(userViewsDir))
 	return true
 }
 
@@ -145,7 +145,7 @@ func stripComments(s string) string {
 	return b.String()
 }
 
-// writeView writes a new view only where none is (two dbv may be at it),
+// writeView writes a new query only where none is (two dbv may be at it),
 // and an edited one whole or not at all.
 func writeView(path, text string, exists bool) error {
 	dir := filepath.Dir(path)
@@ -192,4 +192,18 @@ func tildePath(p string) string {
 		return p
 	}
 	return filepath.Join("~", rest)
+}
+
+// renameQuery renames a query's file, never over another one.
+func renameQuery(old, name string) error {
+	name, err := queryName(name)
+	if err != nil {
+		return err
+	}
+	to := filepath.Join(userViewsDir, name+".sql")
+	err = os.Link(filepath.Join(userViewsDir, old+".sql"), to) // fails where a file is: rename would replace it
+	if err != nil {
+		return err
+	}
+	return os.Remove(filepath.Join(userViewsDir, old+".sql"))
 }

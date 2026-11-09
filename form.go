@@ -13,7 +13,7 @@ import (
 	"github.com/crgimenes/filo-term-go/screen"
 )
 
-// Parameter is a {{name:type:title:order}} token in a user view's SQL.
+// Parameter is a {{name:type:title:order}} token in a query's SQL.
 type Parameter struct {
 	Name       string // required
 	Type       string // default "string"
@@ -67,7 +67,7 @@ func fillParameters(sql string, params []Parameter, values []string) string {
 	return sql
 }
 
-func openUserView(a *app, name string) {
+func openQuery(a *app, name string) {
 	b, err := os.ReadFile(filepath.Join(userViewsDir, name+".sql")) // #nosec G304 -- a file the user put in their views directory
 	if err != nil {
 		a.fail(err)
@@ -91,7 +91,7 @@ func showQuery(a *app, name, sql string) {
 	a.push(d)
 }
 
-// paramForm asks for a user view's parameters, all on screen at once.
+// paramForm asks for a query's parameters, all on screen at once.
 type paramForm struct {
 	name   string
 	sql    string
@@ -100,7 +100,7 @@ type paramForm struct {
 	labelw int
 }
 
-// formKey is where a view's parameter keeps the values it was given.
+// formKey is where a query's parameter keeps the values it was given.
 func formKey(view, param string) string { return "form " + view + " " + param }
 
 // newParamForm opens with the values the view ran with last time.

@@ -787,7 +787,7 @@ func sqlValue(v any, dataType string) string {
 	case dataType == "boolean" && (s == "true" || s == "false"):
 		return s
 	}
-	return quoteLiteral(s)
+	return QuoteLiteral(s)
 }
 
 // QuerySQL executes the given SQL query and returns records with column definitions.

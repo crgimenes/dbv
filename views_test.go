@@ -10,13 +10,13 @@ import (
 
 func TestViewName(t *testing.T) {
 	for in, want := range map[string]string{" vendas ": "vendas", "vendas.sql": "vendas", "por mês": "por mês"} {
-		got, err := viewName(in)
+		got, err := queryName(in)
 		if err != nil || got != want {
 			t.Errorf("%q: %q %v", in, got, err)
 		}
 	}
 	for _, bad := range []string{"", "a/b", `a\b`, "../x", ".hidden"} {
-		_, err := viewName(bad)
+		_, err := queryName(bad)
 		if err == nil {
 			t.Errorf("%q accepted", bad)
 		}
@@ -51,7 +51,7 @@ func TestWriteView(t *testing.T) {
 	if err != nil || string(b) != "SELECT 3\n" {
 		t.Fatalf("%q %v", b, err)
 	}
-	if params := ExtractParameters(viewTemplate("")); len(params) != 0 {
+	if params := ExtractParameters(queryTemplate("")); len(params) != 0 {
 		t.Fatalf("the template asks for %v", params)
 	}
 }
