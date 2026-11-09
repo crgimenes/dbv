@@ -217,8 +217,8 @@ func (l *tableList) edit(a *app) {
 	switch t.Type {
 	case queryType:
 		l.saved(a, t.Name, queryType, editQuery(a, t.Name, ""))
-	case "view":
-		editDBView(a, t.Name, func(a *app) { l.saved(a, t.Name, "view", true) })
+	case "view", "materialized view":
+		editDBView(a, t.Name, func(a *app) { l.saved(a, t.Name, t.Type, true) })
 	case "table":
 		v, err := newStructView(a, t.Name)
 		if err != nil {
@@ -226,8 +226,6 @@ func (l *tableList) edit(a *app) {
 			return
 		}
 		a.push(v)
-	case "materialized view":
-		a.say(kit.Warn, "a materialized view has no OR REPLACE: :sql with DROP and CREATE")
 	default:
 		a.say(kit.Warn, "e edits a table, a view or a query")
 	}

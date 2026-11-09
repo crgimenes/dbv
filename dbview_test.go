@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/crgimenes/dbv/db"
 )
 
 func TestErrorUnderTheHeader(t *testing.T) {
@@ -49,9 +51,13 @@ func TestViewDefRunsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	def, err := pg.ViewDef(ctx, rel)
+	def, raw, err := pg.ViewDef(ctx, rel)
 	if err != nil {
 		t.Fatal(err)
+	}
+	_, err = pg.RunDDL(ctx, db.ViewGuard(rel, raw)+def)
+	if err != nil {
+		t.Fatal(err) // unchanged: the guard lets it through
 	}
 	want := `CREATE OR REPLACE VIEW "Active Users" WITH (security_barrier=true, check_option=local) AS`
 	if !strings.HasPrefix(def, want) || !strings.HasSuffix(def, "on_;\n") {
@@ -69,7 +75,11 @@ func TestViewDefRunsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = pg.ViewDef(ctx, tab)
+	_, err = pg.RunDDL(ctx, db.ViewGuard(rel, raw)+def)
+	if err == nil || !strings.Contains(err.Error(), "changed in the database") {
+		t.Fatalf("a view changed meanwhile was replaced: %v", err)
+	}
+	_, _, err = pg.ViewDef(ctx, tab)
 	if err == nil {
 		t.Fatal("a table's definition as a view")
 	}
@@ -206,5 +216,61 @@ func TestWhereOnAQuery(t *testing.T) {
 	}
 	if len(res.Rows) != 3 {
 		t.Fatalf("%v", res.Rows)
+	}
+}
+
+// A materialized view made again keeps what a drop takes along.
+func TestMatViewDefRunsBack(t *testing.T) {
+	pg := testDB(t, "")
+	mustExec(t, pg, `DROP MATERIALIZED VIEW IF EXISTS "Sales %"; DROP TABLE IF EXISTS dbv_ms;
+		DO $$ BEGIN CREATE ROLE dbv_reader; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+		CREATE TABLE dbv_ms (id int, v int);
+		INSERT INTO dbv_ms VALUES (1, 10), (2, 20);
+		CREATE MATERIALIZED VIEW "Sales %" WITH (fillfactor = 90) AS SELECT id, v FROM dbv_ms;
+		CREATE UNIQUE INDEX dbv_ms_id ON "Sales %" (id);
+		COMMENT ON MATERIALIZED VIEW "Sales %" IS 'it''s daily';
+		GRANT SELECT ON "Sales %" TO dbv_reader`)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rel, err := pg.Resolve(ctx, "Sales %")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, raw, err := pg.MatViewDef(ctx, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`DROP MATERIALIZED VIEW "Sales %";`,
+		`CREATE MATERIALIZED VIEW "Sales %" WITH (fillfactor=90) AS`,
+		"WITH DATA;",
+		`CREATE UNIQUE INDEX dbv_ms_id ON public."Sales %" USING btree (id);`,
+		`COMMENT ON MATERIALIZED VIEW "Sales %" IS 'it''s daily';`,
+		`GRANT SELECT ON "Sales %" TO dbv_reader;`,
+		`ALTER MATERIALIZED VIEW "Sales %" OWNER TO postgres;`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("no %q in\n%s", want, script)
+		}
+	}
+	_, err = pg.RunDDL(ctx, db.ViewGuard(rel, raw)+strings.Replace(script, "SELECT id,", "SELECT id + 0 AS id,", 1))
+	if err != nil {
+		t.Fatalf("%v\n%s", err, script)
+	}
+	var idx, rows int
+	var grants bool
+	var comment string
+	err = pg.Get(&idx, `SELECT count(*) FROM pg_indexes WHERE indexname = 'dbv_ms_id'`)
+	if err == nil {
+		err = pg.Get(&comment, `SELECT obj_description('"Sales %"'::regclass, 'pg_class')`)
+	}
+	if err == nil {
+		err = pg.Get(&grants, `SELECT has_table_privilege('dbv_reader', '"Sales %"', 'SELECT')`)
+	}
+	if err == nil {
+		err = pg.Get(&rows, `SELECT count(*) FROM "Sales %"`)
+	}
+	if err != nil || idx != 1 || comment != "it's daily" || !grants || rows != 2 {
+		t.Fatalf("index %d, comment %q, grants %v, rows %d: %v", idx, comment, grants, rows, err)
 	}
 }

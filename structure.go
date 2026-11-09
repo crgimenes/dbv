@@ -374,7 +374,7 @@ func (s *structView) addCon(a *app) {
 func (s *structView) run(a *app, what, text string) {
 	text = "-- dbv: db=" + DBTitle + "\n" +
 		"-- Save and quit to run this, quit without saving and nothing runs.\n\n" + text
-	runDDL(a, what, text, func(a *app) {
+	runDDL(a, what, "", text, func(a *app) {
 		a.say(kit.OK, "%s: done", s.name)
 		s.changed(a)
 	})

@@ -7,6 +7,7 @@ import (
 
 	"github.com/crgimenes/filo-term-go/kit"
 
+	"github.com/crgimenes/dbv/db"
 	"github.com/crgimenes/dbv/sqlcomplete"
 )
 
@@ -18,27 +19,44 @@ const viewEditNote = `-- The view as the database has it: save and quit to run t
 
 const errorMark = "-- dbv error: "
 
-// editDBView opens a database view as the statement that makes it, and
-// runs what is saved; after follows a run that worked.
+const matViewEditNote = `-- The materialized view as the database has it, as the statements that
+-- make it again: save and quit to run them, quit without saving and
+-- nothing runs. A drop takes its indexes, comment and grants along, so
+-- they are made again below; a view that uses it fails the DROP, unless
+-- CASCADE drops that view too. WITH DATA fills it now, inside this
+-- transaction.
+`
+
+// editDBView opens a database view, or a materialized one, as the
+// statements that make it, and runs what is saved, unless the view
+// changed in the database meanwhile; after follows a run that worked.
 func editDBView(a *app, name string, after func(a *app)) {
-	var def string
+	var rel db.Rel
+	var def, raw string
 	err := a.busy("reading "+name, func(ctx context.Context) error {
-		rel, err := a.pg.Resolve(ctx, name)
+		var err error
+		rel, err = a.pg.Resolve(ctx, name)
 		if err != nil {
 			return err
 		}
-		def, err = a.pg.ViewDef(ctx, rel)
+		if rel.Kind == "m" {
+			def, raw, err = a.pg.MatViewDef(ctx, rel)
+			return err
+		}
+		def, raw, err = a.pg.ViewDef(ctx, rel)
 		return err
 	})
 	if err != nil {
 		a.fail(err)
 		return
 	}
-	// yagni: a change made meanwhile by someone else is replaced; a check
-	// would read the definition again in the transaction that runs this.
-	text := "-- dbv: db=" + DBTitle + "\n" + viewEditNote + "\n" + def
-	runDDL(a, "replacing "+name, text, func(a *app) {
-		a.say(kit.OK, "view %s replaced", name)
+	note, done := viewEditNote, "view %s replaced"
+	if rel.Kind == "m" {
+		note, done = matViewEditNote, "materialized view %s made again"
+	}
+	text := "-- dbv: db=" + DBTitle + "\n" + note + "\n" + def
+	runDDL(a, "replacing "+name, db.ViewGuard(rel, raw), text, func(a *app) {
+		a.say(kit.OK, done, name)
 		after(a)
 	})
 }
@@ -59,7 +77,7 @@ func createDBView(a *app, name, body string, after func(a *app)) {
 		"-- A new view in the database: save and quit to create it, quit\n" +
 		"-- without saving and nothing is created.\n\n" +
 		"CREATE VIEW " + ddlName(name) + " AS\n" + body + "\n"
-	runDDL(a, "creating "+name, text, func(a *app) {
+	runDDL(a, "creating "+name, "", text, func(a *app) {
 		a.say(kit.OK, "view %s created", name)
 		after(a)
 	})
@@ -80,8 +98,9 @@ func ddlName(name string) string {
 // db.LockWait at most for a lock; a statement that loses data asks first.
 // On an error the text opens again with the error on top, so a typo does
 // not cost the edit; quitting without saving runs nothing. done follows a
-// run that worked.
-func runDDL(a *app, what, text string, done func(a *app)) {
+// run that worked. pre runs first, in the same transaction, unseen: a
+// guard, or "".
+func runDDL(a *app, what, pre, text string, done func(a *app)) {
 	raw, wrote, err := a.externalSaved(envOr("EDITOR", "vi"), text)
 	if err != nil {
 		a.fail(err)
@@ -94,7 +113,7 @@ func runDDL(a *app, what, text string, done func(a *app)) {
 	}
 	run := func(a *app) {
 		err := a.busy(what, func(ctx context.Context) error {
-			_, err := a.pg.RunDDL(ctx, saved)
+			_, err := a.pg.RunDDL(ctx, pre+saved)
 			return err
 		})
 		if errors.Is(err, context.Canceled) {
@@ -102,7 +121,7 @@ func runDDL(a *app, what, text string, done func(a *app)) {
 			return
 		}
 		if err != nil {
-			runDDL(a, what, withError(saved, err), done)
+			runDDL(a, what, pre, withError(saved, err), done)
 			return
 		}
 		done(a)
@@ -182,7 +201,7 @@ func createTable(a *app, name string, after func(a *app)) {
 		"CREATE TABLE " + ddlName(name) + " (\n" +
 		"    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY\n" +
 		");\n"
-	runDDL(a, "creating "+name, text, func(a *app) {
+	runDDL(a, "creating "+name, "", text, func(a *app) {
 		a.say(kit.OK, "table %s created", name)
 		after(a)
 	})
