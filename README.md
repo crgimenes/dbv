@@ -165,7 +165,7 @@ Table list:
 - `t`: only tables, only views (materialized ones too), only queries, then all again; it combines with `/`, and `Esc` clears it too
 - `y`: copy the table name to the clipboard
 - `:`: command line; `?`: help
-- `Esc`: back to the connections menu (`a` add, `e` edit, `D` remove); `q`: quit
+- `Esc`: back to the connections menu (`a` add, `e` edit, `D` remove); `:connections`, on the list, a grid or a structure, goes straight there; `q`: quit
 
 Everywhere, as in other terminal programs: `Ctrl-C` quits (on a command
 line it drops the line), `Ctrl-Z` suspends (`fg` resumes), `Ctrl-L`

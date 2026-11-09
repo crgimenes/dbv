@@ -746,6 +746,8 @@ func (d *tableData) command(a *app, line string) {
 		d.hidden = nil
 	case cmd == "sql":
 		runSQL(a)
+	case cmd == "connections":
+		toConnections(a)
 	case cmd == "structure" && !d.query:
 		v, err := newStructView(a, d.name)
 		if err != nil {
@@ -768,7 +770,7 @@ func (d *tableData) command(a *app, line string) {
 	}
 }
 
-var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "query", "view", "structure", "export", "quit"}
+var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "query", "view", "structure", "export", "connections", "quit"}
 
 // querySQL is a query's SQL as the grid shows it: its own, inside a
 // subselect when a :where filters it.
@@ -1035,6 +1037,7 @@ var dataHelp = []string{
 	":query NAME    keep the grid's SELECT as a query of yours, edited first",
 	":view NAME     create a view in the database from the grid's SELECT",
 	":structure     the table's columns: add, rename, type, default, drop",
+	":connections   the connections menu: open, add, edit, remove",
 	":export F.csv  every row of the filter (or .json), to a new file",
 	"esc q :q       back to the tables",
 	"^C ^Z ^L       quit, suspend (fg resumes), redraw",

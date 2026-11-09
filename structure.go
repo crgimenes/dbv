@@ -213,7 +213,7 @@ func (s *structView) key(a *app, k screen.Key) {
 	}
 }
 
-var structCommands = []string{"add", "constraint", "reload", "sql", "quit"}
+var structCommands = []string{"add", "constraint", "reload", "sql", "connections", "quit"}
 
 func (s *structView) command(a *app, line string) {
 	cmd := strings.TrimSpace(line)
@@ -225,6 +225,8 @@ func (s *structView) command(a *app, line string) {
 		s.changed(a)
 	case cmd == "sql":
 		runSQL(a)
+	case cmd == "connections":
+		toConnections(a)
 	case cmd == "constraint" || cmd == "index":
 		s.addCon(a)
 	case cmd == "add" || strings.HasPrefix(cmd, "add "):
@@ -250,6 +252,7 @@ var structHelp = []string{
 	"",
 	":reload       read the structure again",
 	":sql          write SQL in $EDITOR and run it",
+	":connections  the connections menu",
 	"esc q :q      back",
 }
 

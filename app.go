@@ -604,7 +604,7 @@ func (m *dbMenu) items() []kit.Item {
 	return items
 }
 
-func (m *dbMenu) title() string { return "dbv " + GitTag + " · Select a database" }
+func (m *dbMenu) title() string { return "dbv " + GitTag + " · Connections" }
 
 func (m *dbMenu) hints() []kit.Hint {
 	return []kit.Hint{
@@ -643,6 +643,18 @@ func (m *dbMenu) key(a *app, k screen.Key) {
 		return
 	}
 	a.push(m.next(a))
+}
+
+// toConnections is :connections: every screen above the connections menu
+// closes.
+func toConnections(a *app) {
+	for len(a.views) > 1 {
+		_, ok := a.top().(*dbMenu)
+		if ok {
+			return
+		}
+		a.pop()
+	}
 }
 
 // manage is a, e and D on the menu: the connections in m.file.

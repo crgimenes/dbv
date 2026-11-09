@@ -231,7 +231,7 @@ func (l *tableList) edit(a *app) {
 	}
 }
 
-var listCommands = []string{"clear", "reload", "rename", "query", "view", "table", "sql", "help", "quit"}
+var listCommands = []string{"clear", "reload", "rename", "query", "view", "table", "sql", "connections", "help", "quit"}
 
 // nextKind shows the next kind of row only, the filter kept.
 func (l *tableList) nextKind(a *app) {
@@ -314,6 +314,8 @@ func (l *tableList) command(a *app, line string) {
 		l.reload(a)
 	case "sql":
 		runSQL(a)
+	case "connections":
+		toConnections(a)
 	case "query":
 		l.newQuery(a, "")
 	case "view", "table":
@@ -379,6 +381,7 @@ var listHelp = []string{
 	":reload       read the table list again",
 	":rename       rename the table, view or query under the cursor",
 	":sql          write SQL in $EDITOR and run it (writes too)",
+	":connections  the connections menu: open, add, edit, remove",
 	"n :query NAME a new query of yours, written in $EDITOR",
 	":view NAME    a new view in the database, written in $EDITOR",
 	"e             edit what is under the cursor: a table's structure,",
