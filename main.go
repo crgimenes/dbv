@@ -219,7 +219,12 @@ func main() {
 	var configs []db.DBConfig
 	if len(files) == 0 {
 		configFiles = []string{configPath()}
-		configs = loadDBConfigs(configFiles[0])
+		if !fileExists(configFiles[0]) {
+			configFiles = []string{getInitFiloPath()} // none yet: the menu's a writes the first
+		}
+		if fileExists(configFiles[0]) {
+			configs = loadDBConfigs(configFiles[0])
+		}
 	}
 	if len(files) > 0 {
 		for _, f := range files {
@@ -236,7 +241,11 @@ func main() {
 	if selectMode {
 		first = newSelector(selectorOutputFile)
 	}
-	err := runTUI(configs, first)
+	file := ""
+	if len(configFiles) == 1 {
+		file = configFiles[0]
+	}
+	err := runTUI(configs, file, first)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dbv:", err)
 		os.Exit(1)

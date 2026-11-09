@@ -85,12 +85,6 @@ func TestWriteOutputRefusesSymlink(t *testing.T) {
 	}
 }
 
-func TestNoConfigNeedsNoTerminal(t *testing.T) {
-	if runTUI(nil, newTableList) == nil {
-		t.Fatal("no connections must be an error, before the terminal is touched")
-	}
-}
-
 // The tests below need DBV_TEST_URL (see TestQueryReadOnly).
 
 func testDB(t *testing.T, extra string) *db.Postgres {

@@ -520,18 +520,20 @@ func (a *app) connect(cfg db.DBConfig, n int) error {
 	return nil
 }
 
-func runTUI(configs []db.DBConfig, first func(a *app) view) error {
-	if len(configs) == 0 {
-		return fmt.Errorf("no connection configured in %s", configPath())
-	}
+// runTUI starts on the connections menu; with one connection it opens it
+// at once, the menu under it for Esc to reach. file is the config the menu
+// writes, "" when several were read.
+func runTUI(configs []db.DBConfig, file string, first func(a *app) view) error {
 	return withApp(func(a *app) error {
-		if len(configs) > 1 {
-			a.push(&dbMenu{configs: configs, next: first})
+		m := &dbMenu{configs: configs, file: file, next: first}
+		a.push(m)
+		if len(configs) != 1 {
 			return nil
 		}
 		err := a.connect(configs[0], 1)
 		if err != nil {
-			return err
+			a.fail(err) // the menu stays, to fix the connection
+			return nil
 		}
 		a.push(first(a))
 		return nil
@@ -582,9 +584,10 @@ func withApp(start func(a *app) error) error {
 	return a.run()
 }
 
-// dbMenu picks the connection when the config has several.
+// dbMenu picks the connection, and adds, edits and removes them in file.
 type dbMenu struct {
 	configs []db.DBConfig
+	file    string
 	next    func(a *app) view
 	menu    kit.Menu
 }
@@ -604,19 +607,33 @@ func (m *dbMenu) items() []kit.Item {
 func (m *dbMenu) title() string { return "dbv " + GitTag + " · Select a database" }
 
 func (m *dbMenu) hints() []kit.Hint {
-	return []kit.Hint{{Key: "↑↓", What: "move"}, {Key: "1-9", What: "open"}, {Key: "enter", What: "open"}, {Key: "q", What: "quit"}}
+	return []kit.Hint{
+		{Key: "↑↓", What: "move"}, {Key: "enter 1-9", What: "open"}, {Key: "a", What: "add"},
+		{Key: "e", What: "edit"}, {Key: "D", What: "remove"}, {Key: "q", What: "quit"},
+	}
 }
 
 func (m *dbMenu) draw(_ *app, c *screen.Canvas, top, left, _, cols int) {
+	if len(m.configs) == 0 {
+		c.Print(top+1, left+2, "no connection yet: a adds one", kit.Dim)
+		return
+	}
 	m.menu.Draw(c, top+1, left+2, m.items(), 1, cols-4)
 }
 
 func (m *dbMenu) key(a *app, k screen.Key) {
-	if k == 'q' || k == screen.KeyEsc {
+	switch k {
+	case 'q', screen.KeyEsc:
 		a.quit = true
 		return
+	case 'a', 'e', 'D':
+		m.manage(a, k)
+		return
 	}
-	i := m.menu.Key(k, m.items(), 1)
+	if len(m.configs) == 0 {
+		return
+	}
+	i := m.menu.Key(vimKey(k), m.items(), 1)
 	if i < 0 {
 		return
 	}
@@ -626,6 +643,43 @@ func (m *dbMenu) key(a *app, k screen.Key) {
 		return
 	}
 	a.push(m.next(a))
+}
+
+// manage is a, e and D on the menu: the connections in m.file.
+func (m *dbMenu) manage(a *app, k screen.Key) {
+	if m.file == "" {
+		a.say(kit.Warn, "several config files were read: edit them by hand")
+		return
+	}
+	cur := m.menu.At
+	if k == 'a' {
+		a.push(newConnForm(m, -1))
+		return
+	}
+	if cur >= len(m.configs) {
+		return
+	}
+	if k == 'e' {
+		a.push(newConnForm(m, cur))
+		return
+	}
+	title := m.configs[cur].Title
+	a.ask("remove "+title+" from "+tildePath(m.file)+"? y/N ", "", func(a *app, line string) {
+		line = strings.ToLower(strings.TrimSpace(line))
+		if line != "y" && line != "yes" {
+			a.say(kit.Plain, "nothing removed")
+			return
+		}
+		configs := append(m.configs[:cur:cur], m.configs[cur+1:]...)
+		err := writeDBConfigs(m.file, configs)
+		if err != nil {
+			a.fail(err)
+			return
+		}
+		m.configs = configs
+		m.menu.At = max(0, min(cur, len(configs)-1))
+		a.say(kit.OK, "%s removed; the old file is %s.bak", title, tildePath(m.file))
+	})
 }
 
 // clipMax is about what xterm and most emulators take in one OSC 52.

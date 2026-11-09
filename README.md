@@ -53,7 +53,7 @@ You can also download the pre-built binaries from the [GitHub Releases](https://
 
 ## Configuration
 
-By default, dbv loads database connections from a [Filo](https://github.com/crgimenes/filo) file named `init.filo`. Place this file in the platform's config directory — `~/Library/Application Support/dbv/init.filo` on macOS, `~/.config/dbv/init.filo` on Linux (or `$XDG_CONFIG_HOME/dbv`) — or in the current directory. Each connection is declared with `(database url [title] [views])`: the URL is required, the title is optional (it defaults to the URL with the password masked), and an optional third argument points to a directory of custom views. For example:
+By default, dbv loads database connections from a [Filo](https://github.com/crgimenes/filo) file named `init.filo`. Place this file in the platform's config directory — `~/Library/Application Support/dbv/init.filo` on macOS, `~/.config/dbv/init.filo` on Linux (or `$XDG_CONFIG_HOME/dbv`) — or in the current directory. Each connection is declared with `(database url [title] [views])`: the URL is required, the title is optional (it defaults to the URL with the password masked), and an optional third argument points to the directory of your queries (`.sql` files). The connections menu, the first screen, writes this file for you: `a` adds a connection, `e` edits the one under the cursor, `D` removes it (after `y`), each in a form with a `Test` button; the file is then rewritten as one `(database ...)` line per connection, the previous one kept as `init.filo.bak`, so comments or Filo code in it are not kept. In the form, a password shows as `...` and stays as it was while left so; a new one shows while it is typed (`~/.pgpass` keeps it off the URL). With no file yet, dbv opens on the empty menu. With one connection, dbv opens it at once and `Esc` on the table list goes back to the menu. For example:
 
 ```scheme
 (database "postgres://username:password@localhost:5432/mydb?sslmode=disable" "LocalDB")
@@ -165,7 +165,7 @@ Table list:
 - `t`: only tables, only views (materialized ones too), only queries, then all again; it combines with `/`, and `Esc` clears it too
 - `y`: copy the table name to the clipboard
 - `:`: command line; `?`: help
-- `Esc`: back to the database menu; `q`: quit
+- `Esc`: back to the connections menu (`a` add, `e` edit, `D` remove); `q`: quit
 
 Everywhere, as in other terminal programs: `Ctrl-C` quits (on a command
 line it drops the line), `Ctrl-Z` suspends (`fg` resumes), `Ctrl-L`
