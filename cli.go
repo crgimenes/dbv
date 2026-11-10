@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -70,8 +71,11 @@ rows:
 Text output is ';'-separated with a header line; NULL prints as NULL.
 JSON output for rows/query: {"columns":[{"name","type"}],"rows":[[...]],"truncated":bool}.
 
+dbv COMMAND -h shows one command alone.
+
 Example:
   dbv -h
+  dbv rows -h
   dbv query -db 1 -json 'SELECT id, name FROM users LIMIT 5'
   echo 'SELECT now()' | dbv query -db LocalDB
   dbv update -db 1 -write -key id=7 users name 'Ana Maria'
@@ -91,21 +95,97 @@ type cliOpts struct {
 }
 
 type command struct {
-	writes bool
-	args   int // required positional arguments; -1 means optional SQL
-	run    func(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) error
+	writes  bool
+	args    int // required positional arguments; -1 means optional SQL
+	run     func(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) error
+	use     string   // the arguments, for dbv COMMAND -h
+	what    string   // one sentence
+	flags   []string // its own flags, beyond commonFlags
+	example string
 }
 
 var commands = map[string]command{
-	"dbs":     {args: 0},
-	"tables":  {args: 0, run: cmdTables},
-	"columns": {args: 1, run: cmdColumns},
-	"rows":    {args: 1, run: cmdRows},
-	"query":   {args: -1, run: cmdQuery},
-	"struct":  {args: 1, run: cmdStruct},
-	"insert":  {args: 1, run: cmdInsert},
-	"exec":    {args: -1, run: cmdExec, writes: true},
-	"update":  {args: 3, run: cmdUpdate, writes: true},
+	"dbs": {args: 0, what: "the configured connections: n;title;url (password masked);views",
+		example: "dbv dbs -json"},
+	"tables": {args: 0, run: cmdTables, what: "tables, views and materialized views: name;type;size;primary key",
+		example: "dbv tables -db 1"},
+	"columns": {args: 1, run: cmdColumns, use: "TABLE", what: "the columns of a table, in table order: name;type",
+		example: "dbv columns -db 1 users"},
+	"rows": {args: 1, run: cmdRows, use: "TABLE", what: "rows of a table, in a READ ONLY transaction",
+		flags: []string{"limit", "where", "order", "offset"}, example: "dbv rows -db 1 -where 'id > 10' -limit 5 users"},
+	"query": {args: -1, run: cmdQuery, use: "[SQL | -]", what: "one statement in a READ ONLY transaction, from stdin when SQL is absent or -",
+		flags: []string{"limit"}, example: "echo 'SELECT now()' | dbv query -db 1"},
+	"struct": {args: 1, run: cmdStruct, use: "TABLE", what: "a Go struct for a table",
+		example: "dbv struct -db 1 users"},
+	"insert": {args: 1, run: cmdInsert, use: "TABLE", what: "an INSERT template for a table, not executed",
+		example: "dbv insert -db 1 users"},
+	"exec": {args: -1, run: cmdExec, writes: true, use: "[SQL | -]", what: "SQL that writes, all of it in one transaction; refused without -write",
+		flags: []string{"write"}, example: "dbv exec -db 1 -write 'DELETE FROM sessions WHERE expired'"},
+	"update": {args: 3, run: cmdUpdate, writes: true, use: "TABLE COLUMN VALUE",
+		what:  "set one cell; -key names the whole primary key and must match exactly one row, or nothing changes",
+		flags: []string{"write", "key"}, example: "dbv update -db 1 -write -key id=7 users name 'Ana Maria'"},
+}
+
+var commonFlags = []string{"config", "db", "json", "timeout", "debug"}
+
+var flagHelp = map[string]string{
+	"config":  "-config FILE  connections from FILE instead of the default init.filo",
+	"db":      "-db NAME      connection by title or 1-based number (default: the only one)",
+	"json":    "-json         JSON on stdout instead of ';'-separated text",
+	"timeout": "-timeout D    bound for the whole command (default 30s)",
+	"debug":   "-debug        one line per step on stderr",
+	"limit":   "-limit N      at most N rows (default 1000); a cut is reported on stderr",
+	"where":   "-where SQL    WHERE clause, without the keyword",
+	"order":   "-order SQL    ORDER BY clause, without the keyword (default: primary key)",
+	"offset":  "-offset N     skip N rows (default 0)",
+	"write":   "-write        allow the change (without it the command refuses, exit 2)",
+	"key":     "-key COL=VAL  a primary key column and its value; repeat for each column",
+}
+
+func commandUsage(name string, c command) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "dbv %s: %s.\n\nUsage: dbv %s [flags] %s\n\nFlags:\n", name, c.what, name, c.use)
+	for _, f := range append(slices.Clone(c.flags), commonFlags...) {
+		fmt.Fprintf(&b, "  %s\n", flagHelp[f])
+	}
+	fmt.Fprintf(&b, "\nExample: %s\n", c.example)
+	return b.String()
+}
+
+// nearCommand is the command name typed may have meant: one a prefix of
+// the other, or two edits away at most.
+func nearCommand(typed string) string {
+	best, dist := "", 3
+	for name := range commands {
+		if strings.HasPrefix(name, typed) || strings.HasPrefix(typed, name) {
+			return name
+		}
+		d := editDistance(typed, name)
+		if d < dist || d == dist && name < best {
+			best, dist = name, d
+		}
+	}
+	return best
+}
+
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
 }
 
 // keyList is -key COL=VAL, repeated.
@@ -146,11 +226,21 @@ func runCLI(name string, argv []string) int {
 
 	err := fs.Parse(argv)
 	if errors.Is(err, flag.ErrHelp) {
-		fmt.Print(usage)
+		fmt.Print(commandUsage(name, cmd))
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dbv %s: %v\n", name, err)
+		fmt.Fprintf(os.Stderr, "dbv %s: %v (dbv %s -h)\n", name, err, name)
+		return 2
+	}
+	var stray []string
+	fs.Visit(func(f *flag.Flag) {
+		if !slices.Contains(cmd.flags, f.Name) && !slices.Contains(commonFlags, f.Name) {
+			stray = append(stray, "-"+f.Name)
+		}
+	})
+	if len(stray) > 0 {
+		fmt.Fprintf(os.Stderr, "dbv %s: %s does not apply here (dbv %s -h)\n", name, strings.Join(stray, " "), name)
 		return 2
 	}
 	if *debug {
@@ -159,7 +249,7 @@ func runCLI(name string, argv []string) int {
 	cliStart := debugNow()
 	args := fs.Args()
 	if cmd.args >= 0 && len(args) != cmd.args {
-		fmt.Fprintf(os.Stderr, "dbv %s: want %d argument(s), got %d (dbv -h)\n", name, cmd.args, len(args))
+		fmt.Fprintf(os.Stderr, "dbv %s: want %s, got %d argument(s) (dbv %s -h)\n", name, cmd.use, len(args), name)
 		return 2
 	}
 	if cmd.writes && !o.write {
@@ -279,8 +369,8 @@ func cmdDBs(configs []db.DBConfig, o cliOpts) error {
 	return writeText(records)
 }
 
-func cmdTables(_ context.Context, pg *db.Postgres, o cliOpts, _ []string) error {
-	tables, err := pg.ListTablesAndViews()
+func cmdTables(ctx context.Context, pg *db.Postgres, o cliOpts, _ []string) error {
+	tables, err := pg.ListTablesAndViews(ctx)
 	if err != nil {
 		return err
 	}
@@ -365,7 +455,10 @@ func printResult(ctx context.Context, pg *db.Postgres, o cliOpts, query string) 
 	if err != nil {
 		return err
 	}
-	if res.Truncated {
+	if res.Truncated && len(res.Rows) < o.limit {
+		fmt.Fprintf(os.Stderr, "dbv: stopped at %d rows, %d MB read; select fewer columns, or LIMIT and OFFSET\n", len(res.Rows), db.BytesMax>>20)
+	}
+	if res.Truncated && len(res.Rows) >= o.limit {
 		fmt.Fprintf(os.Stderr, "dbv: stopped at %d rows; raise -limit for more\n", o.limit)
 	}
 	if o.json {
@@ -382,16 +475,16 @@ func printSource(o cliOpts, key, text string) error {
 	return err
 }
 
-func cmdStruct(_ context.Context, pg *db.Postgres, o cliOpts, args []string) error {
-	s, err := pg.CreateGoStructDefinition(args[0])
+func cmdStruct(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) error {
+	s, err := pg.CreateGoStructDefinition(ctx, args[0])
 	if err != nil {
 		return err
 	}
 	return printSource(o, "go", s)
 }
 
-func cmdInsert(_ context.Context, pg *db.Postgres, o cliOpts, args []string) error {
-	s, err := pg.CreateInsertStatement(args[0])
+func cmdInsert(ctx context.Context, pg *db.Postgres, o cliOpts, args []string) error {
+	s, err := pg.CreateInsertStatement(ctx, args[0])
 	if err != nil {
 		return err
 	}

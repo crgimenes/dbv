@@ -191,8 +191,6 @@ func withError(text string, err error) string {
 	return head.String() + rest
 }
 
-// createTable writes CREATE TABLE name in $EDITOR, a key to start from,
-// and runs what is saved.
 func createTable(a *app, name string, after func(a *app)) {
 	name = strings.TrimSpace(name)
 	text := "-- dbv: db=" + DBTitle + "\n" +
@@ -205,4 +203,29 @@ func createTable(a *app, name string, after func(a *app)) {
 		a.say(kit.OK, "table %s created", name)
 		after(a)
 	})
+}
+
+// showSchema opens name's DDL in $EDITOR to read: nothing saved there
+// runs; e on the list changes it.
+func showSchema(a *app, name string) {
+	var ddl string
+	err := a.busy("reading "+name, func(ctx context.Context) error {
+		rel, err := a.pg.Resolve(ctx, name)
+		if err != nil {
+			return err
+		}
+		ddl, err = a.pg.DDL(ctx, rel)
+		return err
+	})
+	if err != nil {
+		a.fail(err)
+		return
+	}
+	text := "-- dbv: db=" + DBTitle + "\n" +
+		"-- " + name + " as the database has it, to read: nothing saved here runs\n" +
+		"-- (e on it in the list changes it).\n\n" + ddl
+	_, err = a.edit(text)
+	if err != nil {
+		a.fail(err)
+	}
 }

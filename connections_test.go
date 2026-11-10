@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,7 +11,7 @@ import (
 )
 
 // What writeDBConfigs writes reads back the same, odd characters and all,
-// and the file it replaces stays as .bak.
+// and the file it replaces stays as .bak, 0600 whatever was there before.
 func TestConfigsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "dbv", "init.filo")
@@ -19,30 +20,71 @@ func TestConfigsRoundTrip(t *testing.T) {
 		{URL: `postgres://u:p"a\ss;w(o)rd@h:5432/d?sslmode=disable`, Title: `Prod "main"; (eu)`, ViewsPath: views},
 		{URL: "postgres://h/d2", Title: "Two"},
 	}
-	err := writeDBConfigs(path, in[:1])
+	read, err := writeDBConfigs(path, in[:1], nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = writeDBConfigs(path, in)
+	victim := filepath.Join(dir, "victim")
+	err = os.WriteFile(victim, []byte("keep"), 0o644)
+	if err == nil {
+		err = os.Symlink(victim, path+".bak") // a link where the backup goes
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = writeDBConfigs(path, in, []byte("not what is there"))
+	if !errors.Is(err, errConfigChanged) {
+		t.Fatalf("a file changed since it was read: %v", err)
+	}
+	_, err = writeDBConfigs(path, in, read)
 	if err != nil {
 		t.Fatal(err)
 	}
 	out, err := readDBConfigs(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(in, out) {
-		t.Fatalf("%+v", out)
+	if err != nil || !slices.Equal(in, out) {
+		t.Fatalf("%+v %v", out, err)
 	}
 	bak, err := readDBConfigs(path + ".bak")
 	if err != nil || len(bak) != 1 {
 		t.Fatalf("%+v %v", bak, err)
 	}
+	kept, err := os.ReadFile(victim)
+	if err != nil || string(kept) != "keep" {
+		t.Fatalf("written through the link: %q %v", kept, err)
+	}
 	for _, p := range []string{path, path + ".bak"} {
-		info, err := os.Stat(p)
-		if err != nil || info.Mode().Perm() != 0o600 {
+		info, err := os.Lstat(p)
+		if err != nil || info.Mode() != 0o600 {
 			t.Fatalf("%s: %v %v", p, info.Mode(), err)
 		}
+	}
+}
+
+// A config that is a link (to a dotfiles repository) stays a link: the file
+// it names is the one rewritten.
+func TestConfigLinkKept(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "dotfiles.filo")
+	link := filepath.Join(dir, "init.filo")
+	err := os.WriteFile(target, []byte(`(database "postgres://h/a" "A")`), 0o600)
+	if err == nil {
+		err = os.Symlink(target, link)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, _ := os.ReadFile(link)
+	_, err = writeDBConfigs(link, []db.DBConfig{{URL: "postgres://h/b", Title: "B"}}, read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("the link was replaced by a file")
+	}
+	got, err := readDBConfigs(target)
+	if err != nil || len(got) != 1 || got[0].Title != "B" {
+		t.Fatalf("%+v %v", got, err)
 	}
 }
 

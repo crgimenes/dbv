@@ -289,6 +289,20 @@ func dollarTag(s string) string {
 	return ""
 }
 
+// TrimEnd is text without its closing ";" and the comments and space
+// after it, read by the lexer: a ; inside a string or a comment stays.
+func TrimEnd(text string) string {
+	toks, _ := tokens(text)
+	if len(toks) == 0 {
+		return strings.TrimSpace(text)
+	}
+	last := toks[len(toks)-1]
+	if last.kind == tPunct && last.text == ";" {
+		return strings.TrimRight(text[:last.pos], " \t\r\n")
+	}
+	return strings.TrimRight(text[:last.end], " \t\r\n")
+}
+
 // Statement is the span [start, end) of the statement at offset in text.
 // Statements end at a ';' or a blank line outside quotes and comments, as
 // a scratch file of queries is written: one after another, often with no

@@ -24,8 +24,12 @@ type Parameter struct {
 
 var paramToken = regexp.MustCompile(`\{\{(.*?)\}\}`)
 
+// ExtractParameters is a query's parameters, one per name: {{id}} used
+// twice is one field, filling both. A type, title or order given on any of
+// its tokens counts, the first one given winning.
 func ExtractParameters(sqlStr string) []Parameter {
 	var params []Parameter
+	seen := map[string]int{}
 	for i, match := range paramToken.FindAllStringSubmatch(sqlStr, -1) {
 		fields := strings.Split(match[1], ":")
 		for j, field := range fields {
@@ -47,7 +51,22 @@ func ExtractParameters(sqlStr string) []Parameter {
 				p.ZOrder = z
 			}
 		}
-		params = append(params, p)
+		at, again := seen[p.Name]
+		if !again {
+			seen[p.Name] = len(params)
+			params = append(params, p)
+			continue
+		}
+		q := &params[at]
+		if q.Type == "string" && len(fields) >= 2 && fields[1] != "" {
+			q.Type = p.Type
+		}
+		if q.Title == q.Name {
+			q.Title = p.Title
+		}
+		if q.ZOrder == q.Occurrence && p.ZOrder != i {
+			q.ZOrder = p.ZOrder
+		}
 	}
 	sort.SliceStable(params, func(i, j int) bool {
 		if params[i].ZOrder != params[j].ZOrder {

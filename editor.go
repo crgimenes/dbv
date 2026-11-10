@@ -15,7 +15,6 @@ import (
 )
 
 // updateCell writes value into column col of row, found by its primary key.
-// rowKey is the row's primary key: its columns and their values on screen.
 func rowKey(ctx context.Context, pg *db.Postgres, table string, header, row []string) ([]string, []any, error) {
 	pks, err := pg.GetPrimaryKeyColumns(ctx, table)
 	if err != nil {

@@ -82,7 +82,8 @@ func readMessage(reader *bufio.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("invalid Content-Length")
 	}
 	body := make([]byte, contentLength)
-	if _, err := io.ReadFull(reader, body); err != nil {
+	_, err := io.ReadFull(reader, body)
+	if err != nil {
 		return nil, err
 	}
 	return body, nil
@@ -90,10 +91,11 @@ func readMessage(reader *bufio.Reader) ([]byte, error) {
 
 func writeMessage(response []byte) error {
 	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(response))
-	if _, err := os.Stdout.Write([]byte(header)); err != nil {
+	_, err := os.Stdout.Write([]byte(header))
+	if err != nil {
 		return err
 	}
-	_, err := os.Stdout.Write(response)
+	_, err = os.Stdout.Write(response)
 	return err
 }
 
@@ -146,7 +148,8 @@ func handleRequest(req *Request) error {
 				Text string `json:"text"`
 			} `json:"textDocument"`
 		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
+		err := json.Unmarshal(req.Params, &params)
+		if err != nil {
 			return err
 		}
 		documents[params.TextDocument.URI] = params.TextDocument.Text
@@ -161,7 +164,8 @@ func handleRequest(req *Request) error {
 				Text string `json:"text"`
 			} `json:"contentChanges"`
 		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
+		err := json.Unmarshal(req.Params, &params)
+		if err != nil {
 			return err
 		}
 		if len(params.ContentChanges) > 0 {
@@ -170,7 +174,8 @@ func handleRequest(req *Request) error {
 		return nil
 	case "textDocument/completion":
 		var params CompletionParams
-		if err := json.Unmarshal(req.Params, &params); err != nil {
+		err := json.Unmarshal(req.Params, &params)
+		if err != nil {
 			return err
 		}
 		docContent, ok := documents[params.TextDocument.URI]
@@ -219,11 +224,13 @@ func main() {
 			break
 		}
 		var req Request
-		if err := json.Unmarshal(data, &req); err != nil {
+		err = json.Unmarshal(data, &req)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error parsing JSON:", err)
 			continue
 		}
-		if err := handleRequest(&req); err != nil {
+		err = handleRequest(&req)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error handling request:", err)
 		}
 	}

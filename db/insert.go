@@ -16,8 +16,7 @@ type ColumnInfoEx struct {
 	Generated     string         `db:"generated"` // "s" stored; "" not one
 }
 
-func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
-	ctx := context.Background()
+func (pg *Postgres) CreateInsertStatement(ctx context.Context, tableName string) (string, error) {
 	rel, err := pg.Resolve(ctx, tableName)
 	if err != nil {
 		return "", err
@@ -45,9 +44,9 @@ func (pg *Postgres) CreateInsertStatement(tableName string) (string, error) {
 	for _, c := range cols {
 		if pkSet[c.ColumnName] {
 			primaryCols = append(primaryCols, c)
-		} else {
-			nonPrimaryCols = append(nonPrimaryCols, c)
+			continue
 		}
+		nonPrimaryCols = append(nonPrimaryCols, c)
 	}
 
 	// Sort non-PK columns alphabetically.

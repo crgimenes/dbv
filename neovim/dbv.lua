@@ -1,7 +1,7 @@
 -- dbv.lua: run the SQL statement under the cursor, or the selection, and
 -- see its rows in dbv's grid in a split below (dbv show -h). :DBVRun runs
 -- the statement at the cursor; from visual mode (:'<,'>DBVRun) the
--- selection; with a range of lines, those lines. :DBVInfo says which
+-- selection, a block (Ctrl-V) too; with a range of lines, those lines. :DBVInfo says which
 -- connection the buffer gets, and why, and what the server is.
 -- The connection is dbv's when nvim runs inside it (DBV_DB), else the
 -- file's "-- dbv: db=NAME", else the only one configured.
@@ -17,9 +17,17 @@ local function offset(lines, row, col)
 end
 
 -- the -at argument: the cursor's offset; a charwise selection's FROM:TO
--- when the range is '<,'>; else whole lines
+-- when the range is '<,'>; a block's, appended to lines (the file keeps
+-- its "-- dbv: db=" header); else whole lines
 local function at(opts, lines)
   local visual = opts.range > 0 and vim.fn.histget(":", -1):match("^%s*'<%s*,%s*'>") ~= nil
+  if visual and vim.fn.visualmode() == "\22" and vim.fn.exists("*getregion") == 1 then
+    local block = vim.fn.getregion(vim.fn.getpos("'<"), vim.fn.getpos("'>"), { type = "\22" })
+    table.insert(lines, "")
+    local first = #lines + 1
+    vim.list_extend(lines, block)
+    return offset(lines, first, 0) .. ":" .. offset(lines, #lines, #lines[#lines])
+  end
   if visual and vim.fn.visualmode() == "v" then
     local s, e = vim.fn.getpos("'<"), vim.fn.getpos("'>")
     local last = lines[e[2]] or ""

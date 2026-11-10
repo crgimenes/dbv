@@ -17,6 +17,7 @@ import (
 	"github.com/crgimenes/filo-term-go/screen"
 
 	"github.com/crgimenes/dbv/db"
+	"github.com/crgimenes/dbv/sqlcomplete"
 )
 
 const (
@@ -92,7 +93,7 @@ func newQueryData(a *app, name, sql string) (*tableData, error) {
 	d.total = len(d.rows)
 	d.measure()
 	if res.Truncated {
-		a.say(kit.Warn, "showing the first %d rows", queryRowsMax)
+		a.say(kit.Warn, "showing the first %d rows (at most %d, or %d MB)", len(res.Rows), queryRowsMax, db.BytesMax>>20)
 	}
 	return d, nil
 }
@@ -129,7 +130,7 @@ func (d *tableData) orderSQL() string {
 // reset reads the first page again; until it arrives (or if it fails, or
 // is cancelled) the rows on screen stay as they were.
 func (d *tableData) reset(a *app) error {
-	p, err := d.page(a, 0)
+	p, err := d.page(a, 0, recordsPerPage)
 	if err != nil {
 		return err
 	}
@@ -139,7 +140,7 @@ func (d *tableData) reset(a *app) error {
 }
 
 func (d *tableData) load(a *app) error {
-	p, err := d.page(a, len(d.rows))
+	p, err := d.page(a, len(d.rows), recordsPerPage)
 	if err != nil {
 		return err
 	}
@@ -147,22 +148,51 @@ func (d *tableData) load(a *app) error {
 	return nil
 }
 
+// tailMax is how many rows G reads at once to reach the end of a table.
+const tailMax = 10000
+
+// toEnd is G: the last row of the table, reading what is left in one go,
+// up to tailMax rows.
+func (d *tableData) toEnd(a *app) {
+	left := d.total - len(d.rows)
+	if d.query || left <= 0 {
+		d.row = max(0, len(d.rows)-1)
+		return
+	}
+	if left > tailMax {
+		d.row = max(0, len(d.rows)-1)
+		a.say(kit.Warn, "G: %d rows left to read, more than %d; :where, or O on a column to sort it the other way, reaches the end sooner", left, tailMax)
+		return
+	}
+	p, err := d.page(a, len(d.rows), left)
+	if err != nil {
+		a.fail(err)
+		return
+	}
+	d.apply(p)
+	d.row = max(0, len(d.rows)-1)
+	if p.cut {
+		a.say(kit.Warn, "G: stopped at %d MB read; the rows past it are not read yet", db.BytesMax>>20)
+	}
+}
+
 type pageOf struct {
 	rows    [][]any
 	columns []db.ColumnInfo
 	total   int
+	cut     bool // stopped at db.BytesMax: not the end of the table
 }
 
-// page reads recordsPerPage rows from offset off the event loop: Esc
-// cancels it. It reads d but changes nothing.
-func (d *tableData) page(a *app, offset int) (pageOf, error) {
+// page reads limit rows from offset off the event loop: Esc cancels it. It
+// reads d but changes nothing.
+func (d *tableData) page(a *app, offset, limit int) (pageOf, error) {
 	var p pageOf
 	name, where, order := d.name, d.where, d.orderSQL()
 	var recs []map[string]any
 	start := debugNow()
 	err := a.busy("reading "+name, func(ctx context.Context) error {
 		var err error
-		recs, p.columns, p.total, err = a.pg.ListRecords(ctx, name, "", offset, recordsPerPage, where, order)
+		recs, p.columns, p.total, p.cut, err = a.pg.ListRecords(ctx, name, "", offset, limit, where, order)
 		return err
 	})
 	debugEvent("load", start, "table", name, "offset", offset, "rows", len(recs), "total", p.total,
@@ -182,7 +212,10 @@ func (d *tableData) page(a *app, offset int) (pageOf, error) {
 
 func (d *tableData) apply(p pageOf) {
 	before := d.header
-	d.columns, d.total = p.columns, p.total
+	d.columns = p.columns
+	if p.total >= 0 { // a later page leaves the first page's count
+		d.total = p.total
+	}
 	d.setHeader()
 	if !slices.Equal(before, d.header) {
 		// the table changed shape since the rows on screen were read: they
@@ -191,6 +224,9 @@ func (d *tableData) apply(p pageOf) {
 	}
 	for _, r := range p.rows {
 		d.add(r)
+	}
+	if p.total < 0 && !p.cut && (len(p.rows) < recordsPerPage || len(d.rows) > d.total) {
+		d.total = len(d.rows) // rows went or came since the count
 	}
 	d.measure()
 	// the table may have lost columns since (an ALTER through :sql)
@@ -445,7 +481,7 @@ func (d *tableData) key(a *app, k screen.Key) {
 	case 'g':
 		d.row = 0
 	case 'G':
-		d.row = max(0, len(d.rows)-1)
+		d.toEnd(a)
 	case screen.KeyEsc, 'q', screen.KeyBackspace:
 		a.pop()
 	case 'e', 'v': // v: less's key for $EDITOR
@@ -750,6 +786,8 @@ func (d *tableData) command(a *app, line string) {
 		runSQL(a)
 	case cmd == "connections":
 		toConnections(a)
+	case cmd == "schema" && !d.query:
+		showSchema(a, d.name)
 	case cmd == "structure" && !d.query:
 		v, err := newStructView(a, d.name)
 		if err != nil {
@@ -772,7 +810,7 @@ func (d *tableData) command(a *app, line string) {
 	}
 }
 
-var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "query", "view", "structure", "export", "connections", "quit"}
+var dataCommands = []string{"where", "order", "show", "insert", "struct", "json", "update", "sql", "query", "view", "structure", "schema", "export", "connections", "quit"}
 
 // querySQL is a query's SQL as the grid shows it: its own, inside a
 // subselect when a :where filters it.
@@ -780,7 +818,7 @@ func (d *tableData) querySQL() string {
 	if d.where == "" || d.sql == "" {
 		return d.sql
 	}
-	return "SELECT * FROM (\n" + strings.TrimRight(strings.TrimSpace(d.sql), "; \t\n") + "\n) AS q\nWHERE " + d.where
+	return "SELECT * FROM (\n" + sqlcomplete.TrimEnd(d.sql) + "\n) AS q\nWHERE " + d.where
 }
 
 // whereQuery runs a query again, read only, its rows filtered by cond (none
@@ -867,9 +905,17 @@ func (d *tableData) run(a *app, what string) {
 	var err error
 	switch what {
 	case "insert":
-		text, err = a.pg.CreateInsertStatement(d.name)
+		err = a.busy("reading "+d.name, func(ctx context.Context) error {
+			var err error
+			text, err = a.pg.CreateInsertStatement(ctx, d.name)
+			return err
+		})
 	case "struct":
-		text, err = a.pg.CreateGoStructDefinition(d.name)
+		err = a.busy("reading "+d.name, func(ctx context.Context) error {
+			var err error
+			text, err = a.pg.CreateGoStructDefinition(ctx, d.name)
+			return err
+		})
 	case "json":
 		text, err = rowJSON(d.columns, d.rowValues())
 	case "update":
@@ -1009,11 +1055,13 @@ func (d *tableData) editCell(a *app) {
 		a.fail(err)
 		return
 	}
-	d.rows[d.row][d.col], d.nulls[d.row][d.col] = value, false
-	a.say(kit.OK, "%s saved", d.header[d.col])
-	if d.ordersBy(d.header[d.col]) {
-		d.reload(a)
+	if d.where != "" || d.ordersBy(name) || slices.Contains(strings.Split(d.pk, ", "), name) {
+		d.reload(a) // the row may have left the filter, moved, or have a new key
+		a.say(kit.OK, "%s saved", name)
+		return
 	}
+	d.refreshCell(a, at, col) // as stored: a trigger may have changed it
+	a.say(kit.OK, "%s saved", name)
 }
 
 // edited says what the editor's file means for a cell that held old: the
@@ -1030,7 +1078,7 @@ func edited(old, raw string) (string, bool) {
 // setCell puts v (nil is NULL) in the cell, saying whether it was not
 // already there.
 func (d *tableData) setCell(row, col int, v any) bool {
-	s, null := "", v == nil
+	s, null := "NULL", v == nil // as add shows it
 	if !null {
 		s = fmt.Sprint(v)
 	}
@@ -1042,7 +1090,6 @@ func (d *tableData) setCell(row, col int, v any) bool {
 	return true
 }
 
-// refreshCell reads one cell again.
 func (d *tableData) refreshCell(a *app, row, col int) {
 	var now any
 	err := a.busy("reading "+d.header[col], func(ctx context.Context) error {
@@ -1106,6 +1153,7 @@ var dataHelp = []string{
 	":query NAME    keep the grid's SELECT as a query of yours, edited first",
 	":view NAME     create a view in the database from the grid's SELECT",
 	":structure     the table's columns: add, rename, type, default, drop",
+	":schema        the table's DDL, in $EDITOR to read",
 	":connections   the connections menu: open, add, edit, remove",
 	":export F.csv  every row of the filter (or .json), to a new file",
 	"esc q :q       back to the tables",

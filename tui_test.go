@@ -11,10 +11,10 @@ import (
 func TestParameters(t *testing.T) {
 	sql := "SELECT * FROM t WHERE b = {{b::Second:2}} AND a = {{a:int:First:1}} OR a = {{a}}"
 	params := ExtractParameters(sql)
-	if len(params) != 3 || params[0].Name != "a" || params[0].Title != "First" || params[1].Name != "b" {
+	if len(params) != 2 || params[0].Name != "a" || params[0].Title != "First" || params[1].Name != "b" {
 		t.Fatalf("%+v", params)
 	}
-	got := fillParameters(sql, params[:2], []string{"7", "$1 x"})
+	got := fillParameters(sql, params, []string{"7", "$1 x"})
 	want := "SELECT * FROM t WHERE b = $1 x AND a = 7 OR a = 7"
 	if got != want {
 		t.Fatalf("got  %q\nwant %q", got, want)

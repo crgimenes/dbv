@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,4 +81,52 @@ func TestQueryReadOnly(t *testing.T) {
 	if err == nil {
 		t.Fatal("write accepted inside a read-only transaction")
 	}
+}
+
+func TestCommandHelpAndStrayFlags(t *testing.T) {
+	for name, c := range commands {
+		u := commandUsage(name, c)
+		if !strings.HasPrefix(u, "dbv "+name+": ") || !strings.Contains(u[strings.Index(u, "Example:"):], "dbv "+name) {
+			t.Errorf("%s: %q", name, u)
+		}
+		for _, f := range c.flags {
+			if flagHelp[f] == "" {
+				t.Errorf("%s: no help for -%s", name, f)
+			}
+		}
+	}
+	t.Setenv("HOME", t.TempDir()) // never the machine's own connections
+	t.Setenv("XDG_CONFIG_HOME", "")
+	for _, argv := range [][]string{{"tables", "-where", "x"}, {"rows", "-limit", "5", "-write", "t"}} {
+		code, msg := stderrOf(t, func() int { return runCLI(argv[0], argv[1:]) })
+		if code != 2 || !strings.Contains(msg, "does not apply here") {
+			t.Fatalf("%v: %d %q", argv, code, msg)
+		}
+	}
+	cases := map[string]string{"tabels": "tables", "colums": "columns", "row": "rows", "upate": "update", "zzzzzz": ""}
+	for typed, want := range cases {
+		got := nearCommand(typed)
+		if got != want {
+			t.Errorf("%s: %q, want %q", typed, got, want)
+		}
+	}
+	if !strings.Contains(notFound("tabels"), "did you mean tables") || !strings.Contains(notFound("x.filo"), "file not found") {
+		t.Fatal(notFound("tabels"))
+	}
+}
+
+// stderrOf runs f with stderr caught.
+func stderrOf(t *testing.T, f func() int) (int, string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	code := f()
+	os.Stderr = old
+	_ = w.Close()
+	b, _ := io.ReadAll(r)
+	return code, string(b)
 }

@@ -310,6 +310,7 @@ func (s *lspServer) completion(params json.RawMessage) any {
 	items := sqlcomplete.Complete(s.catalog(text), ctx)
 
 	from := positionAt(text, st+ctx.From, s.utf8)
+	to := positionAt(text, wordEnd(text, st+ctx.From, cur), s.utf8) // the rest of the word goes too: cli|entes
 	out := make([]map[string]any, 0, len(items))
 	for _, it := range items {
 		out = append(out, map[string]any{
@@ -317,7 +318,7 @@ func (s *lspServer) completion(params json.RawMessage) any {
 			"kind":       lspKind(it.Kind),
 			"detail":     it.Detail,
 			"filterText": it.Label,
-			"textEdit":   map[string]any{"range": lspRange{from, p.Position}, "newText": it.Insert},
+			"textEdit":   map[string]any{"range": lspRange{from, to}, "newText": it.Insert},
 		})
 	}
 	return map[string]any{"isIncomplete": false, "items": out}
@@ -361,18 +362,59 @@ func lspKind(k string) int {
 // dbFor is the config files and the connection name for text: dbv's own
 // connection when dbv opened the editor (its number: titles repeat), else
 // the file's -- dbv: db=, else none.
+// dbFor is the connection text gets, by dbv show's rule (showDB): the dbv
+// nvim runs under, the file's header, else the only one configured; with
+// several and no header, none.
 func (s *lspServer) dbFor(text string) ([]string, string) {
 	if len(s.envFiles) > 0 {
 		return s.envFiles, s.envDB
 	}
-	name := headerDB(text)
-	if name == "" {
+	files, name, _ := showDB(s.config, "", text)
+	if name != "" {
+		return files, name
+	}
+	n := 0
+	for _, f := range files {
+		c, err := readDBConfigs(f)
+		if err != nil {
+			return nil, ""
+		}
+		n += len(c)
+	}
+	if n != 1 {
 		return nil, ""
 	}
-	if s.config != "" {
-		return []string{s.config}, name
+	return files, ""
+}
+
+// wordEnd is where the identifier that starts at start, and has the
+// cursor off inside it, ends: past its closing quote when it opens with
+// one ("" inside does not close it), else past its last bare byte.
+func wordEnd(text string, start, off int) int {
+	if start < len(text) && text[start] == '"' {
+		for i := off; i < len(text) && text[i] != '\n'; i++ {
+			if text[i] != '"' {
+				continue
+			}
+			if i+1 < len(text) && text[i+1] == '"' {
+				i++
+				continue
+			}
+			return i + 1
+		}
+		return off
 	}
-	return []string{configPath()}, name
+	end := off
+	for end < len(text) && isWordByte(text[end]) {
+		end++
+	}
+	return end
+}
+
+// isWordByte is a byte of a bare identifier; any byte of a multi-byte
+// rune counts, as letters beyond ASCII do.
+func isWordByte(b byte) bool {
+	return b == '_' || b == '$' || b >= 0x80 || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 // headerDB reads -- dbv: db=NAME from the comments that open the file.
@@ -409,7 +451,7 @@ func (s *lspServer) catalog(text string) *sqlcomplete.Catalog {
 // A failure is not tried again on every key, only on the next reason.
 func (s *lspServer) catalogFor(text, why string) *sqlcomplete.Catalog {
 	files, name := s.dbFor(text)
-	if name == "" {
+	if files == nil {
 		return nil
 	}
 	key := strings.Join(files, string(os.PathListSeparator)) + "\x00" + name

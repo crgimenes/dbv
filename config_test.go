@@ -18,7 +18,8 @@ func TestLoadDBConfigs(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "init.filo")
-	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+	err := os.WriteFile(path, []byte(cfg), 0o600)
+	if err != nil {
 		t.Fatalf("write temp config: %v", err)
 	}
 

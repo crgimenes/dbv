@@ -76,7 +76,8 @@ func TestOnlyReads(t *testing.T) {
 		"select 1; commit":                                  false,
 		"set default_transaction_read_only = off; select 1": false,
 	} {
-		if got := onlyReads(sql); got != want {
+		got := onlyReads(sql)
+		if got != want {
 			t.Errorf("onlyReads(%q) = %v", sql, got)
 		}
 	}

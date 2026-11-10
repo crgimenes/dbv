@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 
@@ -29,7 +30,7 @@ type selector struct {
 func newSelector(out string) func(a *app) view {
 	return func(a *app) view {
 		s := &selector{out: out}
-		tables, err := getTableList(a.pg)
+		tables, err := getTableList(a)
 		if err != nil {
 			a.fail(err)
 		}
@@ -163,8 +164,13 @@ func (s *selector) columns(a *app, table string) {
 	s.fields, s.table, s.keepT, s.list.Cursor = fields, table, s.list.Cursor, 0
 }
 
-func (s *selector) generate(a *app, table, what string, gen func(string) (string, error)) {
-	text, err := gen(table)
+func (s *selector) generate(a *app, table, what string, gen func(context.Context, string) (string, error)) {
+	var text string
+	err := a.busy("reading "+table, func(ctx context.Context) error {
+		var err error
+		text, err = gen(ctx, table)
+		return err
+	})
 	if err != nil {
 		a.fail(err)
 		return

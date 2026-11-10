@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -76,9 +77,7 @@ func (a *app) push(v view) { a.views = append(a.views, v) }
 
 func (a *app) pop() {
 	a.views = a.views[:len(a.views)-1]
-	if len(a.views) == 0 {
-		a.quit = true
-	}
+	a.quit = a.quit || len(a.views) == 0
 }
 
 func (a *app) top() view { return a.views[len(a.views)-1] }
@@ -293,9 +292,7 @@ func (a *app) run() error {
 		w, h := a.t.Size()
 		if w < minW || h < minH {
 			// nothing shows: a key would act unseen (a y/N asked, a cell saved)
-			if ev.Key == 'q' || ev.Key == screen.Ctrl('c') {
-				a.quit = true
-			}
+			a.quit = a.quit || ev.Key == 'q' || ev.Key == screen.Ctrl('c')
 			continue
 		}
 		start := debugNow()
@@ -396,17 +393,21 @@ func (a *app) paint() {
 		a.c.Fill(h-2, 1, 1, w-2, ' ', kit.Text)
 		kit.Note(a.c, h-2, 1, w-2, a.tone, a.note) // the line's own row is taken
 	}
+	a.bottomLine(v, w, h)
+	_ = a.t.Draw(a.c)
+}
+
+func (a *app) bottomLine(v view, w, h int) {
 	if a.asking() {
 		n := a.c.Print(h-1, 1, a.prompt, kit.Hot)
 		a.input.Draw(a.c, h-1, 1+n, w-2-n, kit.Text, true)
-	} else {
-		kit.Note(a.c, h-1, 1, w-2, a.tone, a.note)
-		st, ok := v.(statuser)
-		if a.note == "" && ok {
-			kit.Note(a.c, h-1, 1, w-2, kit.Plain, st.status())
-		}
+		return
 	}
-	_ = a.t.Draw(a.c)
+	kit.Note(a.c, h-1, 1, w-2, a.tone, a.note)
+	st, ok := v.(statuser)
+	if a.note == "" && ok {
+		kit.Note(a.c, h-1, 1, w-2, kit.Plain, st.status())
+	}
 }
 
 // absList joins paths, made absolute, as a PATH-like list.
@@ -502,10 +503,8 @@ func (a *app) page(text string) error {
 // connect opens cfg, the n-th connection (from 1) of the configs read; the
 // number, not the title, tells the editor's dbv lsp which one it is.
 func (a *app) connect(cfg db.DBConfig, n int) error {
-	a.say(kit.Wait, "connecting to %s", cfg.Title)
-	a.paint()
 	start := debugNow()
-	pg, err := db.New(cfg.URL)
+	pg, err := openDB(a, cfg)
 	debugEvent("connect", start, "title", cfg.Title, "err", err)
 	if err != nil {
 		return fmt.Errorf("connect %q: %w", cfg.Title, err)
@@ -523,9 +522,28 @@ func (a *app) connect(cfg db.DBConfig, n int) error {
 // runTUI starts on the connections menu; with one connection it opens it
 // at once, the menu under it for Esc to reach. file is the config the menu
 // writes, "" when several were read.
+func newDBMenu(configs []db.DBConfig, file string, next func(a *app) view) *dbMenu {
+	m := &dbMenu{configs: configs, file: file, next: next}
+	if file != "" {
+		m.read, _ = os.ReadFile(filepath.Clean(file)) // #nosec G304 -- dbv's own config path, or the file the user named
+	}
+	return m
+}
+
+// openDB connects under busy: Esc cancels the dial.
+func openDB(a *app, cfg db.DBConfig) (*db.Postgres, error) {
+	var pg *db.Postgres
+	err := a.busy("connecting to "+cfg.Title, func(ctx context.Context) error {
+		var err error
+		pg, err = db.NewContext(ctx, cfg.URL)
+		return err
+	})
+	return pg, err
+}
+
 func runTUI(configs []db.DBConfig, file string, first func(a *app) view) error {
 	return withApp(func(a *app) error {
-		m := &dbMenu{configs: configs, file: file, next: first}
+		m := newDBMenu(configs, file, first)
 		a.push(m)
 		if len(configs) != 1 {
 			return nil
@@ -584,10 +602,10 @@ func withApp(start func(a *app) error) error {
 	return a.run()
 }
 
-// dbMenu picks the connection, and adds, edits and removes them in file.
 type dbMenu struct {
 	configs []db.DBConfig
 	file    string
+	read    []byte // file as configs came from it; nil, not there
 	next    func(a *app) view
 	menu    kit.Menu
 }
@@ -623,8 +641,11 @@ func (m *dbMenu) draw(_ *app, c *screen.Canvas, top, left, _, cols int) {
 
 func (m *dbMenu) key(a *app, k screen.Key) {
 	switch k {
-	case 'q', screen.KeyEsc:
+	case 'q':
 		a.quit = true
+		return
+	case screen.KeyEsc:
+		a.pop() // the last screen: dbv ends
 		return
 	case 'a', 'e', 'D':
 		m.manage(a, k)
@@ -645,9 +666,11 @@ func (m *dbMenu) key(a *app, k screen.Key) {
 	a.push(m.next(a))
 }
 
-// toConnections is :connections: every screen above the connections menu
-// closes.
 func toConnections(a *app) {
+	if !slices.ContainsFunc(a.views, func(v view) bool { _, ok := v.(*dbMenu); return ok }) {
+		a.push(connectionsMenu(a)) // dbv show starts on its SQL, not on the menu
+		return
+	}
 	for len(a.views) > 1 {
 		_, ok := a.top().(*dbMenu)
 		if ok {
@@ -655,6 +678,23 @@ func toConnections(a *app) {
 		}
 		a.pop()
 	}
+}
+
+// connectionsMenu is a menu over the config files this dbv read.
+func connectionsMenu(a *app) *dbMenu {
+	var configs []db.DBConfig
+	for _, f := range configFiles {
+		c, err := readDBConfigs(f)
+		if err != nil {
+			a.fail(err)
+		}
+		configs = append(configs, c...)
+	}
+	file := ""
+	if len(configFiles) == 1 {
+		file = configFiles[0]
+	}
+	return newDBMenu(configs, file, newTableList)
 }
 
 // manage is a, e and D on the menu: the connections in m.file.
@@ -683,12 +723,12 @@ func (m *dbMenu) manage(a *app, k screen.Key) {
 			return
 		}
 		configs := append(m.configs[:cur:cur], m.configs[cur+1:]...)
-		err := writeDBConfigs(m.file, configs)
+		data, err := writeDBConfigs(m.file, configs, m.read)
 		if err != nil {
 			a.fail(err)
 			return
 		}
-		m.configs = configs
+		m.configs, m.read = configs, data
 		m.menu.At = max(0, min(cur, len(configs)-1))
 		a.say(kit.OK, "%s removed; the old file is %s.bak", title, tildePath(m.file))
 	})

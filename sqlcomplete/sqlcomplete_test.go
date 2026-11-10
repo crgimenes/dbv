@@ -93,12 +93,14 @@ func TestQuotedAndOffPath(t *testing.T) {
 
 func TestNoCatalog(t *testing.T) {
 	sql, cur := at("select * from clientes c where c.|")
-	if got := Complete(nil, Analyze(sql, cur)); len(got) != 0 {
+	got := Complete(nil, Analyze(sql, cur))
+	if len(got) != 0 {
 		t.Fatalf("%v", got)
 	}
 	sql, cur = at("sel|")
-	if got := labels(Complete(nil, Analyze(sql, cur))); !slices.Equal(got, []string{"select"}) {
-		t.Fatalf("a loose file still completes SQL: %v", got)
+	words := labels(Complete(nil, Analyze(sql, cur)))
+	if !slices.Equal(words, []string{"select"}) {
+		t.Fatalf("a loose file still completes SQL: %v", words)
 	}
 }
 

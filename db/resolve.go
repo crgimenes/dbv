@@ -72,15 +72,18 @@ func QuoteLiteral(s string) string {
 	return "E'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
+// viewPrint is what ViewGuard compares: a view's options and its SELECT.
+const viewPrint = `COALESCE(c.reloptions::text, '') || E'\n' || pg_get_viewdef(c.oid, true)`
+
 // ViewDef is a view as a statement that puts it back as it is: CREATE OR
 // REPLACE VIEW with its options (security_barrier, check_option) and its
-// SELECT as the server prints it. raw is that SELECT as ViewGuard wants it.
+// SELECT as the server prints it. raw is what ViewGuard wants.
 func (pg *Postgres) ViewDef(ctx context.Context, rel Rel) (stmt, raw string, err error) {
-	const q = `SELECT 'CREATE OR REPLACE VIEW ' || c.oid::regclass::text
+	q := `SELECT 'CREATE OR REPLACE VIEW ' || c.oid::regclass::text
 	|| COALESCE(' WITH (' || array_to_string(c.reloptions, ', ') || ')', '')
 	|| E' AS\n' || rtrim(pg_get_viewdef(c.oid, true), E'; \n')
 	|| E';\n',
-	pg_get_viewdef(c.oid, true)
+	` + viewPrint + `
 FROM pg_class c
 WHERE c.oid = $1 AND c.relkind = 'v'`
 	err = pg.DB.QueryRowContext(ctx, q, rel.OID).Scan(&stmt, &raw)
@@ -90,30 +93,42 @@ WHERE c.oid = $1 AND c.relkind = 'v'`
 	return stmt, raw, nil
 }
 
-// MatViewDef is a materialized view as the statements that make it again:
-// DROP, then CREATE with its options and its SELECT, its indexes, comment,
-// grants and owner, since a drop takes them along. raw is as for ViewDef.
-// yagni: column comments and the tablespace are left out.
+// MatViewDef is a materialized view as the statements that make it again,
+// since a drop takes along all but its SELECT. It is made empty, given its
+// indexes, comments, owner and exactly its grants (what default privileges
+// would add is revoked), and only then filled: REFRESH runs as the owner,
+// so the rows are the ones the owner sees, not the editor.
+// yagni: the tablespaces of its indexes are left out.
 func (pg *Postgres) MatViewDef(ctx context.Context, rel Rel) (script, raw string, err error) {
-	const q = `SELECT
-	'DROP MATERIALIZED VIEW ' || c.oid::regclass::text || E';\n'
-	|| 'CREATE MATERIALIZED VIEW ' || c.oid::regclass::text
+	q := `SELECT
+	'DROP MATERIALIZED VIEW ' || n || E';\n'
+	|| 'CREATE MATERIALIZED VIEW ' || n
 	|| COALESCE(' WITH (' || array_to_string(c.reloptions, ', ') || ')', '')
-	|| E' AS\n' || rtrim(pg_get_viewdef(c.oid, true), E'; \n')
-	|| CASE WHEN c.relispopulated THEN E'\nWITH DATA;\n' ELSE E'\nWITH NO DATA;\n' END
+	|| COALESCE((SELECT ' TABLESPACE ' || quote_ident(t.spcname) FROM pg_tablespace t WHERE t.oid = c.reltablespace), '')
+	|| E' AS\n' || rtrim(pg_get_viewdef(c.oid, true), E'; \n') || E'\nWITH NO DATA;\n'
 	|| COALESCE((SELECT string_agg(pg_get_indexdef(i.indexrelid) || E';\n', '' ORDER BY i.indexrelid)
 	             FROM pg_index i WHERE i.indrelid = c.oid), '')
-	|| COALESCE('COMMENT ON MATERIALIZED VIEW ' || c.oid::regclass::text || ' IS '
-	            || quote_literal(obj_description(c.oid, 'pg_class')) || E';\n', '')
-	|| COALESCE((SELECT string_agg('GRANT ' || g.privs || ' ON ' || c.oid::regclass::text || ' TO ' || g.who || E';\n', '' ORDER BY g.who)
+	|| COALESCE('COMMENT ON MATERIALIZED VIEW ' || n || ' IS ' || quote_literal(obj_description(c.oid, 'pg_class')) || E';\n', '')
+	|| COALESCE((SELECT string_agg('COMMENT ON COLUMN ' || n || '.' || quote_ident(a.attname) || ' IS '
+	                               || quote_literal(col_description(c.oid, a.attnum)) || E';\n', '' ORDER BY a.attnum)
+	             FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND col_description(c.oid, a.attnum) IS NOT NULL), '')
+	|| 'ALTER MATERIALIZED VIEW ' || n || ' OWNER TO ' || c.relowner::regrole::text || E';\n'
+	|| 'REVOKE ALL ON ' || n || ' FROM ' || array_to_string(ARRAY(
+	       SELECT DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END
+	       FROM pg_default_acl d, aclexplode(d.defaclacl) a
+	       WHERE d.defaclobjtype = 'r' AND d.defaclrole IN (c.relowner, current_user::regrole)
+	         AND d.defaclnamespace IN (0, c.relnamespace) AND a.grantee <> c.relowner
+	       UNION SELECT 'PUBLIC'), ', ') || E';\n'
+	|| COALESCE((SELECT string_agg('GRANT ' || g.privs || ' ON ' || n || ' TO ' || g.who || g.opt || E';\n', '' ORDER BY g.who, g.opt)
 	             FROM (SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS who,
+	                          CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END AS opt,
 	                          string_agg(a.privilege_type, ', ' ORDER BY a.privilege_type) AS privs
 	                   FROM aclexplode(c.relacl) a
 	                   WHERE a.grantee <> c.relowner
-	                   GROUP BY a.grantee) g), '')
-	|| 'ALTER MATERIALIZED VIEW ' || c.oid::regclass::text || ' OWNER TO ' || c.relowner::regrole::text || E';\n',
-	pg_get_viewdef(c.oid, true)
-FROM pg_class c
+	                   GROUP BY a.grantee, a.is_grantable) g), '')
+	|| CASE WHEN c.relispopulated THEN 'REFRESH MATERIALIZED VIEW ' || n || E';\n' ELSE '' END,
+	` + viewPrint + `
+FROM pg_class c, LATERAL (SELECT c.oid::regclass::text AS n) r
 WHERE c.oid = $1 AND c.relkind = 'm'`
 	err = pg.DB.QueryRowContext(ctx, q, rel.OID).Scan(&script, &raw)
 	if err != nil {
@@ -122,17 +137,25 @@ WHERE c.oid = $1 AND c.relkind = 'm'`
 	return script, raw, nil
 }
 
-// ViewGuard is a statement that fails unless rel's SELECT is still raw: put
-// before an edit of it, in the same transaction, it keeps a change made
+// ViewGuard is a statement that fails unless rel is still what was read:
+// its name still names it, its options and SELECT are still raw. It locks
+// a view first, so nothing changes it between the check and the edit; put
+// before the edit, in the same transaction, it keeps a change made
 // meanwhile by someone else from being replaced unseen.
 func ViewGuard(rel Rel, raw string) string {
+	msg := "dbv: " + rel.SQL + " changed in the database since it was opened; open it again to see it"
 	tag := "$dbv$"
-	for n := 1; strings.Contains(raw+rel.SQL, tag); n++ {
+	for n := 1; strings.Contains(raw+msg+rel.SQL, tag); n++ {
 		tag = fmt.Sprintf("$dbv%d$", n)
 	}
-	return fmt.Sprintf("DO %[1]s BEGIN IF pg_get_viewdef(%[2]d::oid, true) IS DISTINCT FROM %[3]s THEN "+
-		"RAISE EXCEPTION 'dbv: %[4]s changed in the database since it was opened; open it again to see it'; "+
-		"END IF; END %[1]s;\n", tag, rel.OID, QuoteLiteral(raw), strings.NewReplacer("'", "''", "%", "%%").Replace(rel.SQL))
+	return fmt.Sprintf("DO %[1]s BEGIN\n"+
+		"IF (SELECT relkind FROM pg_class WHERE oid = %[2]d) = 'v' THEN\n"+ // LOCK takes no materialized view; its DROP locks it next
+		"  EXECUTE format('LOCK TABLE %%s IN ACCESS EXCLUSIVE MODE', %[2]d::oid::regclass);\n"+
+		"END IF;\n"+
+		"IF to_regclass(%[3]s) IS DISTINCT FROM %[2]d::oid\n"+
+		"  OR (SELECT "+viewPrint+" FROM pg_class c WHERE c.oid = %[2]d) IS DISTINCT FROM %[4]s THEN\n"+
+		"  RAISE EXCEPTION USING MESSAGE = %[5]s;\n"+
+		"END IF; END %[1]s;\n", tag, rel.OID, QuoteLiteral(rel.SQL), QuoteLiteral(raw), QuoteLiteral(msg))
 }
 
 // Rename renames a table, view or materialized view; to is the new name as

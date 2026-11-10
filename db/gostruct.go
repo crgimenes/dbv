@@ -4,86 +4,105 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
 
-func toTitle(s string) string {
-	words := strings.Fields(s)
-	for i, word := range words {
-		runes := []rune(word)
-		if len(runes) > 0 {
-			runes[0] = unicode.ToUpper(runes[0])
-		}
-		words[i] = string(runes)
-	}
-	return strings.Join(words, "")
+// initialisms are written whole in a Go name, as golint and the standard
+// library write them.
+var initialisms = map[string]bool{
+	"ID": true, "URL": true, "URI": true, "UUID": true, "JSON": true, "SQL": true,
+	"HTTP": true, "HTTPS": true, "API": true, "IP": true, "CPU": true, "XML": true, "HTML": true,
 }
 
-func (pg *Postgres) CreateGoStructDefinition(tableName string) (string, error) {
-	ctx := context.Background()
+// goName is a column or table name as an exported Go identifier: every run
+// of letters and digits a word, capitalized; a leading digit gets an F.
+func goName(s string) string {
+	words := strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	var b strings.Builder
+	for _, w := range words {
+		up := strings.ToUpper(w)
+		if initialisms[up] {
+			b.WriteString(up)
+			continue
+		}
+		r := []rune(w)
+		r[0] = unicode.ToUpper(r[0])
+		b.WriteString(string(r))
+	}
+	name := b.String()
+	if name == "" {
+		return "Field"
+	}
+	if unicode.IsDigit([]rune(name)[0]) {
+		return "F" + name
+	}
+	return name
+}
+
+// goType is the Go type a column of PostgreSQL type t (format_type's
+// spelling) scans into; nullable ones are pointers, but for the types
+// whose nil already says NULL.
+func goType(t string, nullable bool) string {
+	base, _, _ := strings.Cut(t, "(")
+	array := strings.HasSuffix(t, "[]")
+	var g string
+	switch {
+	case array:
+		g = "string" // the array as PostgreSQL writes it: {1,2}
+	case base == "smallint":
+		g = "int16"
+	case base == "integer":
+		g = "int32"
+	case base == "bigint":
+		g = "int64"
+	case base == "real":
+		g = "float32"
+	case base == "double precision":
+		g = "float64"
+	case base == "boolean":
+		g = "bool"
+	case base == "date", strings.HasPrefix(base, "timestamp"):
+		g = "time.Time"
+	case base == "json", base == "jsonb":
+		return "json.RawMessage"
+	case base == "bytea":
+		return "[]byte"
+	default:
+		g = "string" // numeric too: exact as text, where float64 would round
+	}
+	if nullable {
+		return "*" + g
+	}
+	return g
+}
+
+func (pg *Postgres) CreateGoStructDefinition(ctx context.Context, tableName string) (string, error) {
 	rel, err := pg.Resolve(ctx, tableName)
 	if err != nil {
 		return "", err
 	}
-	structName := toTitle(strings.ReplaceAll(rel.Name, "_", " "))
-
-	cols, err := pg.relColumns(ctx, rel)
+	cols, err := pg.Structure(ctx, rel)
 	if err != nil {
 		return "", fmt.Errorf("error fetching columns: %w", err)
 	}
-	sort.SliceStable(cols, func(i, j int) bool { return cols[i].ColumnName < cols[j].ColumnName })
 	if len(cols) == 0 {
 		return "", fmt.Errorf("no columns found for table %s", tableName)
 	}
+	sort.SliceStable(cols, func(i, j int) bool { return cols[i].Name < cols[j].Name })
 
-	lines := []string{fmt.Sprintf("type %s struct {", structName)}
+	lines := []string{fmt.Sprintf("type %s struct {", goName(rel.Name))}
+	used := map[string]bool{}
 	for _, c := range cols {
-		var goType string
-		lowerType := strings.ToLower(c.DataType)
-		switch {
-		// Integer types.
-		case strings.Contains(lowerType, "int"):
-			switch {
-			case lowerType == "bigint" || strings.Contains(lowerType, "bigserial"):
-				goType = "int64"
-			case lowerType == "smallint" || strings.Contains(lowerType, "smallserial"):
-				goType = "int16"
-			default:
-				goType = "int"
-			}
-		// Boolean type.
-		case strings.Contains(lowerType, "bool"):
-			goType = "bool"
-		// Floating point and numeric types.
-		case strings.Contains(lowerType, "real"),
-			strings.Contains(lowerType, "double precision"),
-			strings.Contains(lowerType, "numeric"),
-			strings.Contains(lowerType, "decimal"):
-			goType = "float64"
-		// Time types.
-		case strings.Contains(lowerType, "timestamp"),
-			strings.Contains(lowerType, "date"):
-			goType = "time.Time"
-		// JSON types.
-		case strings.Contains(lowerType, "json"):
-			goType = "json.RawMessage"
-		// UUID type.
-		case strings.Contains(lowerType, "uuid"):
-			goType = "string"
-		// Binary data.
-		case strings.Contains(lowerType, "bytea"):
-			goType = "[]byte"
-		// Default to string.
-		default:
-			goType = "string"
+		field := goName(c.Name)
+		for n := 2; used[field]; n++ {
+			field = goName(c.Name) + strconv.Itoa(n)
 		}
-		// Convert column name to TitleCase for the struct field.
-		fieldName := toTitle(c.ColumnName)
-		line := fmt.Sprintf("\t%s %s `db:\"%s\"`", fieldName, goType, c.ColumnName)
-		lines = append(lines, line)
+		used[field] = true
+		tag := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(c.Name)
+		lines = append(lines, fmt.Sprintf("\t%s %s `db:\"%s\"`", field, goType(c.Type, !c.NotNull), tag))
 	}
 	lines = append(lines, "}")
-
 	return strings.Join(lines, "\n"), nil
 }

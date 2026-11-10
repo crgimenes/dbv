@@ -50,8 +50,9 @@ func (pg *Postgres) QueryReadOnly(ctx context.Context, limit int, query string, 
 		})
 	}
 
+	size := 0
 	for rows.Next() {
-		if len(res.Rows) == limit {
+		if len(res.Rows) == limit || size > BytesMax {
 			res.Truncated = true
 			break
 		}
@@ -66,10 +67,26 @@ func (pg *Postgres) QueryReadOnly(ctx context.Context, limit int, query string, 
 		}
 		for i, v := range values {
 			values[i] = plain(v, res.Columns[i].DataType)
+			size += sizeOf(values[i])
 		}
 		res.Rows = append(res.Rows, values)
 	}
 	return res, rows.Err()
+}
+
+// BytesMax bounds what a result keeps besides its row limit: a thousand
+// rows of 10 MB cells would otherwise all be held. The row that crosses it
+// is the last kept.
+const BytesMax = 64 << 20
+
+func sizeOf(v any) int {
+	switch x := v.(type) {
+	case string:
+		return len(x)
+	case []byte:
+		return len(x)
+	}
+	return 16
 }
 
 func plain(v any, dataType string) any {

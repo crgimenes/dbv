@@ -51,18 +51,33 @@ func TestWriteView(t *testing.T) {
 	if err != nil || string(b) != "SELECT 3\n" {
 		t.Fatalf("%q %v", b, err)
 	}
-	if params := ExtractParameters(queryTemplate("")); len(params) != 0 {
+	params := ExtractParameters(queryTemplate(""))
+	if len(params) != 0 {
 		t.Fatalf("the template asks for %v", params)
 	}
 }
 
 func TestFreeName(t *testing.T) {
 	dir := t.TempDir()
-	if got := filepath.Base(freeName(dir, "v")); got != "v-2.sql" {
+	got := filepath.Base(freeName(dir, "v"))
+	if got != "v-2.sql" {
 		t.Fatalf("%s", got)
 	}
 	_ = os.WriteFile(filepath.Join(dir, "v-2.sql"), nil, 0o600)
-	if got := filepath.Base(freeName(dir, "v")); got != "v-3.sql" {
+	got = filepath.Base(freeName(dir, "v"))
+	if got != "v-3.sql" {
 		t.Fatalf("%s", got)
+	}
+}
+
+func TestRepeatedParameterIsOneField(t *testing.T) {
+	sql := "SELECT * FROM t WHERE a = {{id}} OR b = {{ id :int:The id}} OR c = {{other}}"
+	params := ExtractParameters(sql)
+	if len(params) != 2 || params[0].Name != "id" || params[0].Type != "int" || params[0].Title != "The id" {
+		t.Fatalf("%+v", params)
+	}
+	got := fillParameters(sql, params, []string{"7", "x"})
+	if got != "SELECT * FROM t WHERE a = 7 OR b = 7 OR c = x" {
+		t.Fatal(got)
 	}
 }

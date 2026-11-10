@@ -94,7 +94,7 @@ func pushResult(a *app, res []db.Statement, tags []string) {
 		g.measure()
 		a.push(g)
 		if st.Truncated {
-			a.say(kit.Warn, "%s · showing the first %d rows", strings.Join(tags, "; "), queryRowsMax)
+			a.say(kit.Warn, "%s · showing the first %d rows (at most %d, or %d MB)", strings.Join(tags, "; "), len(st.Rows), queryRowsMax, db.BytesMax>>20)
 			return
 		}
 		break

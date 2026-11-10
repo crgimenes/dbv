@@ -57,13 +57,20 @@ type DBConfig struct {
 // quotes it whole, password and all.
 func ParseURL(s string) (*url.URL, error) {
 	u, err := url.Parse(s)
-	if ue, ok := errors.AsType[*url.Error](err); ok {
+	ue, ok := errors.AsType[*url.Error](err)
+	if ok {
 		return nil, fmt.Errorf("the url does not parse: %w", ue.Err)
 	}
 	return u, err
 }
 
 func New(dataBaseURL string) (*Postgres, error) {
+	return NewContext(context.Background(), dataBaseURL)
+}
+
+// NewContext is New whose first connection ctx can cancel; an ssh tunnel
+// takes no context, but its dial and handshake have their own bounds.
+func NewContext(ctx context.Context, dataBaseURL string) (*Postgres, error) {
 	pg := &Postgres{}
 	u, err := ParseURL(dataBaseURL)
 	if err != nil {
@@ -78,7 +85,7 @@ func New(dataBaseURL string) (*Postgres, error) {
 		}
 	}
 
-	pg.DB, err = pg.open(withDefaults(u).String())
+	pg.DB, err = pg.open(ctx, withDefaults(u).String())
 	if err != nil {
 		pg.Close()
 		return nil, err
@@ -115,8 +122,9 @@ func expandPath(p string) (string, error) {
 }
 
 // ssh+postgres://dbUser:dbPass@dbRemoteHost:5432/dbname?sshalias=mydb&localport=5433&sslmode=disable
-func (pg *Postgres) open(dbsource string) (*sqlx.DB, error) {
-	if after, ok := strings.CutPrefix(dbsource, "ssh+"); ok {
+func (pg *Postgres) open(ctx context.Context, dbsource string) (*sqlx.DB, error) {
+	after, ok := strings.CutPrefix(dbsource, "ssh+")
+	if ok {
 		u, err := ParseURL(after)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse DSN: %w", err)
@@ -142,7 +150,8 @@ func (pg *Postgres) open(dbsource string) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = db.Ping(); err != nil {
+	err = db.PingContext(ctx)
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -227,6 +236,9 @@ func (t *tunnelTarget) fromSSHConfig(alias string) error {
 
 // startTunnel forwards localhost:localPort to the remote target through
 // ssh; both ends are kept in pg.tunnel for Close.
+// sshHandshakeWait bounds the ssh handshake, key exchange and auth.
+const sshHandshakeWait = 15 * time.Second
+
 func (pg *Postgres) startTunnel(t tunnelTarget) error {
 	key, err := os.ReadFile(filepath.Clean(t.key))
 	if err != nil {
@@ -240,15 +252,33 @@ func (pg *Postgres) startTunnel(t tunnelTarget) error {
 	if err != nil {
 		return fmt.Errorf("failed to create host key callback: %w", err)
 	}
-	sshConn, err := ssh.Dial("tcp", net.JoinHostPort(t.host, t.port), &ssh.ClientConfig{
-		User:            t.user,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		Timeout:         5 * time.Second,
-		HostKeyCallback: hostKeyCallback,
-	})
+	addr := net.JoinHostPort(t.host, t.port)
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("failed to dial SSH: %w", err)
 	}
+	// ssh.Dial's Timeout covers the TCP connect only: a server that
+	// accepts and then says nothing would hold the handshake forever
+	err = conn.SetDeadline(time.Now().Add(sshHandshakeWait))
+	if err != nil {
+		_ = conn.Close()
+		return err
+	}
+	c, chans, reqs, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
+		User:            t.user,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: hostKeyCallback,
+	})
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("failed to dial SSH: %w", err)
+	}
+	err = conn.SetDeadline(time.Time{})
+	if err != nil {
+		_ = c.Close()
+		return err
+	}
+	sshConn := ssh.NewClient(c, chans, reqs)
 	pg.tunnel = append(pg.tunnel, sshConn)
 	listener, err := net.Listen("tcp", net.JoinHostPort("localhost", t.localPort))
 	if err != nil {
@@ -371,7 +401,7 @@ func (pg *Postgres) Get(ret any, sqlStatement string, args ...any) error {
 	return nil
 }
 
-func (pg *Postgres) ListTablesAndViews() ([]TableInfo, error) {
+func (pg *Postgres) ListTablesAndViews(ctx context.Context) ([]TableInfo, error) {
 	const sqlStatement = `SELECT
         c.relname AS table_name,
         CASE c.relkind
@@ -396,7 +426,7 @@ func (pg *Postgres) ListTablesAndViews() ([]TableInfo, error) {
           AND c.relkind IN ('r', 'p', 'v', 'm')
         ORDER BY table_type, c.relname;`
 	var tables []TableInfo
-	err := pg.DB.Select(&tables, sqlStatement, pg.schemas)
+	err := pg.DB.SelectContext(ctx, &tables, sqlStatement, pg.schemas)
 	if err != nil {
 		return nil, err
 	}
@@ -466,28 +496,35 @@ func (pg *Postgres) ListRecords(
 	where string,
 	orderBy string,
 ) (
-	[]map[string]any,
-	[]ColumnInfo,
-	int,
-	error,
+	records []map[string]any,
+	columns []ColumnInfo,
+	total int,
+	cut bool, // stopped at BytesMax before limit rows
+	err error,
 ) {
 	rel, err := pg.Resolve(ctx, tableName)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, false, err
 	}
 	if where != "" {
 		where = "WHERE " + where
 	}
 
-	var totalRecords int
-	err = pg.DB.GetContext(ctx, &totalRecords, fmt.Sprintf("SELECT COUNT(*) FROM %s %s", rel.From(), where))
-	if err != nil {
-		return nil, nil, 0, err
+	// COUNT(*) reads the whole table: only the first page pays for it, and
+	// a later one says -1, the total its caller already has.
+	// yagni: pages are OFFSET, which rereads the rows before; keyset paging
+	// over an arbitrary :order is the upgrade if deep paging gets slow
+	totalRecords := -1
+	if offset == 0 {
+		err = pg.DB.GetContext(ctx, &totalRecords, fmt.Sprintf("SELECT COUNT(*) FROM %s %s", rel.From(), where))
+		if err != nil {
+			return nil, nil, 0, false, err
+		}
 	}
 
-	columns, err := pg.relColumns(ctx, rel)
+	columns, err = pg.relColumns(ctx, rel)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, false, err
 	}
 	fields := make([]string, len(columns))
 	for i, column := range columns {
@@ -496,7 +533,7 @@ func (pg *Postgres) ListRecords(
 
 	pks, err := pg.relPrimaryKey(ctx, rel)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, false, err
 	}
 	for i, pk := range pks {
 		pks[i] = QuoteName(pk)
@@ -520,27 +557,32 @@ func (pg *Postgres) ListRecords(
 
 	rows, err := pg.DB.QueryxContext(ctx, sqlStatement)
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("error executing query: %v %v", sqlStatement, err)
+		return nil, nil, 0, false, fmt.Errorf("error executing query: %v %v", sqlStatement, err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var records []map[string]any
+	size := 0
 	for rows.Next() {
+		if size > BytesMax {
+			return records, columns, totalRecords, true, rows.Err()
+		}
 		values := make([]any, len(columns))
 		for i := range values {
 			values[i] = new(any)
 		}
 		err = rows.Scan(values...)
 		if err != nil {
-			return nil, nil, 0, err
+			return nil, nil, 0, false, err
 		}
 		record := make(map[string]any, len(columns))
 		for i, column := range columns {
-			record[column.ColumnName] = displayValue(*(values[i].(*any)), column.DataType)
+			v := displayValue(*(values[i].(*any)), column.DataType)
+			record[column.ColumnName] = v
+			size += sizeOf(v)
 		}
 		records = append(records, record)
 	}
-	return records, columns, totalRecords, rows.Err()
+	return records, columns, totalRecords, false, rows.Err()
 }
 
 // displayValue is v as the grid shows and edits it: nil stays nil (NULL),
@@ -587,7 +629,8 @@ func (pg *Postgres) relPrimaryKey(ctx context.Context, rel Rel) ([]string, error
 
 func toGenericTimestamp(input string) (time.Time, error) {
 	if strings.Contains(input, "T") {
-		if t, err := time.Parse(time.RFC3339Nano, input); err == nil {
+		t, err := time.Parse(time.RFC3339Nano, input)
+		if err == nil {
 			return t, nil
 		}
 		return time.Parse(time.RFC3339, input)
@@ -597,7 +640,8 @@ func toGenericTimestamp(input string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("invalid timestamp format: %s", input)
 	}
 	newInput := parts[0] + "T" + parts[1]
-	if t, err := time.Parse(time.RFC3339Nano, newInput); err == nil {
+	t, err := time.Parse(time.RFC3339Nano, newInput)
+	if err == nil {
 		return t, nil
 	}
 	return time.Parse(time.RFC3339, newInput)
@@ -676,7 +720,8 @@ func (pg *Postgres) UpdateDataCell(
 		return err
 	}
 	updateCast := ""
-	if dt := colTypes[fieldName]; strings.Contains(strings.ToLower(dt), "timestamp") {
+	dt := colTypes[fieldName]
+	if strings.Contains(strings.ToLower(dt), "timestamp") {
 		s, ok := newValue.(string)
 		if ok {
 			t, err := toGenericTimestamp(s)
@@ -798,7 +843,7 @@ func (pg *Postgres) CreateUpdateStatement(ctx context.Context, tableName string,
 	for i := 1; i < len(wheres); i++ {
 		wheres[i] = "  AND " + wheres[i]
 	}
-	guard := "  AND dbv_row::text = " + QuoteLiteral(rowText) +
+	guard := "  AND ROW(dbv_row.*)::text = " + QuoteLiteral(rowText) +
 		"\n  -- the line above: the row as read; with it gone, a change made since is written over"
 	return fmt.Sprintf("UPDATE %s AS dbv_row\nSET\n%s\nWHERE %s\n%s\n;", rel.Target(), setBlock, number(wheres, ""), guard), nil
 }
@@ -806,7 +851,7 @@ func (pg *Postgres) CreateUpdateStatement(ctx context.Context, tableName string,
 // rowNow reads the row where picks: each column as the grid shows it, and
 // the whole row as text.
 func (pg *Postgres) rowNow(ctx context.Context, rel Rel, where string, args []any, colTypes map[string]string) (map[string]any, string, error) {
-	q := "SELECT dbv_row.*, dbv_row::text FROM " + rel.From() + " AS dbv_row WHERE " + where // #nosec G202 -- names quoted, values bound
+	q := "SELECT dbv_row.*, ROW(dbv_row.*)::text FROM " + rel.From() + " AS dbv_row WHERE " + where // #nosec G202 -- names quoted, values bound
 	rows, err := pg.DB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, "", err
@@ -898,7 +943,8 @@ func (pg *Postgres) QuerySQL(query string) ([]map[string]any, []ColumnInfo, erro
 		for i := range values {
 			pointers[i] = &values[i]
 		}
-		if err := rows.Scan(pointers...); err != nil {
+		err := rows.Scan(pointers...)
+		if err != nil {
 			return nil, nil, err
 		}
 		for i, col := range columnNames {

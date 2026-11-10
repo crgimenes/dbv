@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -109,7 +110,8 @@ func TestLSPCompletes(t *testing.T) {
 	}
 	waitCatalogs(t, s)
 	got = replies(t, s, askCompletion(2, "file:///a.sql", 2, 9), map[string]any{"jsonrpc": "2.0", "id": 3, "method": "textDocument/definition", "params": map[string]any{}})
-	if l := labelsOf(t, got["2"]); !slices.Equal(l, []string{"id", "nome"}) {
+	l := labelsOf(t, got["2"])
+	if !slices.Equal(l, []string{"id", "nome"}) {
 		t.Fatalf("cl. after FROM clientes cl: %v", l)
 	}
 	if !strings.Contains(string(got["3"]), "-32601") {
@@ -122,12 +124,15 @@ func TestLSPCompletes(t *testing.T) {
 
 func TestLSPLooseFile(t *testing.T) {
 	t.Setenv("DBV_DB", "")
+	t.Setenv("HOME", t.TempDir()) // no config: the machine's own must not count
+	t.Setenv("XDG_CONFIG_HOME", "")
 	s := newLSPServer(nil, "", func([]string, string) (*sqlcomplete.Catalog, error) {
 		t.Fatal("no database named: nothing to load")
 		return nil, nil
 	})
 	got := replies(t, s, didOpen("file:///b.sql", "sel"), askCompletion(1, "file:///b.sql", 0, 3))
-	if l := labelsOf(t, got["1"]); !slices.Equal(l, []string{"select"}) {
+	l := labelsOf(t, got["1"])
+	if !slices.Equal(l, []string{"select"}) {
 		t.Fatalf("%v", l)
 	}
 }
@@ -172,7 +177,8 @@ func TestOffsets(t *testing.T) {
 	if text[off:] != ".x" {
 		t.Fatalf("%q", text[off:])
 	}
-	if p := positionAt(text, off, false); p != (lspPosition{1, 8}) {
+	p := positionAt(text, off, false)
+	if p != (lspPosition{1, 8}) {
 		t.Fatalf("%+v", p)
 	}
 	off = offsetAt(text, lspPosition{1, 9}, true) // bytes: é is two
@@ -253,7 +259,8 @@ func TestLSPRedactsAndRejects(t *testing.T) {
 		`host=h password='s3cr3t tail' port=bad`,
 		`host=h password='s3cr\'3t' port=bad`,
 	} {
-		if got := redact(msg); strings.Contains(got, "s3cr") {
+		got := redact(msg)
+		if strings.Contains(got, "s3cr") {
 			t.Errorf("%s", got)
 		}
 	}
@@ -270,5 +277,63 @@ func TestLSPRedactsAndRejects(t *testing.T) {
 	err := s.serve(strings.NewReader("Content-Length: 5\r\n\r\n{nope"))
 	if err != nil || !strings.Contains(out.String(), "-32700") {
 		t.Fatalf("%v %s", err, out.String())
+	}
+}
+
+// No header: the only connection configured, as dbv show takes it; with
+// two, none.
+func TestLSPOnlyConnection(t *testing.T) {
+	t.Setenv("DBV_DB", "")
+	t.Setenv("DBV_CONFIG", "")
+	dir := t.TempDir()
+	one := filepath.Join(dir, "one.filo")
+	two := filepath.Join(dir, "two.filo")
+	err := os.WriteFile(one, []byte(`(database "postgres://h/a" "A")`), 0o600)
+	if err == nil {
+		err = os.WriteFile(two, []byte(`(database "postgres://h/a" "A") (database "postgres://h/b" "B")`), 0o600)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asked []string
+	load := func(files []string, name string) (*sqlcomplete.Catalog, error) {
+		asked = append(asked, strings.Join(files, ",")+"|"+name)
+		return testCatalog, nil
+	}
+	s := newLSPServer(nil, one, load)
+	replies(t, s, didOpen("file:///c.sql", "select * from "))
+	waitCatalogs(t, s)
+	if !slices.Equal(asked, []string{one + "|"}) {
+		t.Fatalf("one connection: %v", asked)
+	}
+	asked = nil
+	s = newLSPServer(nil, two, load)
+	replies(t, s, didOpen("file:///d.sql", "select * from "), askCompletion(1, "file:///d.sql", 0, 14))
+	if len(asked) != 0 {
+		t.Fatalf("two connections, no header: %v", asked)
+	}
+}
+
+// Completing inside a word replaces all of it.
+func TestWordEnd(t *testing.T) {
+	cases := []struct {
+		text string
+		want string
+	}{
+		{"from [cli|entes] x", "clientes"},
+		{"from [clientes|]", "clientes"},
+		{`from ["Order It|ems"] x`, `"Order Items"`},
+		{`from ["a""b|c"] x`, `"a""bc"`},
+		{`select '"' as x, [na|me] from "t"`, "name"},
+		{"from [é|ç] x", "éç"},
+	}
+	for _, c := range cases {
+		start := strings.Index(c.text, "[")
+		text := strings.NewReplacer("[", "", "]", "", "|", "").Replace(c.text)
+		cur := strings.Index(strings.ReplaceAll(c.text, "[", ""), "|")
+		end := wordEnd(text, start, cur)
+		if text[start:end] != c.want {
+			t.Errorf("%s: %q, want %q", c.text, text[start:end], c.want)
+		}
 	}
 }

@@ -135,7 +135,7 @@ CREATE TABLE dbv_parent (id int PRIMARY KEY, v text);
 CREATE TABLE dbv_child () INHERITS (dbv_parent);
 INSERT INTO dbv_parent VALUES (1, 'p'); INSERT INTO dbv_child VALUES (1, 'c');`)
 
-	recs, cols, total, err := pg.ListRecords(context.Background(), "Order Items", "", 0, 10, "", "")
+	recs, cols, total, _, err := pg.ListRecords(context.Background(), "Order Items", "", 0, 10, "", "")
 	if err != nil || total != 2 || len(cols) != 3 {
 		t.Fatalf("browse: %v total %d cols %d", err, total, len(cols))
 	}
@@ -178,11 +178,11 @@ INSERT INTO dbv_parent VALUES (1, 'p'); INSERT INTO dbv_child VALUES (1, 'c');`)
 		t.Fatalf("the inherited row changed: %q %v", child, err)
 	}
 
-	st, err := pg.CreateGoStructDefinition("Order Items")
+	st, err := pg.CreateGoStructDefinition(context.Background(), "Order Items")
 	if err != nil || !strings.Contains(st, "Price") {
 		t.Fatalf("%s %v", st, err)
 	}
-	ins, err := pg.CreateInsertStatement("Order Items")
+	ins, err := pg.CreateInsertStatement(context.Background(), "Order Items")
 	if err != nil || !strings.Contains(ins, `INSERT INTO "Order Items"`) {
 		t.Fatalf("%s %v", ins, err)
 	}
@@ -210,13 +210,13 @@ INSERT INTO dbv_pp VALUES (5, 'p');`)
 	ctx := context.Background()
 
 	// the parent's grid holds the rows its edits reach: its own
-	recs, _, total, err := pg.ListRecords(ctx, "dbv_ip", "", 0, 10, "", "")
+	recs, _, total, _, err := pg.ListRecords(ctx, "dbv_ip", "", 0, 10, "", "")
 	if err != nil || total != 1 || len(recs) != 1 || recs[0]["v"] != "parent" {
 		t.Fatalf("parent rows: %v %d %v", recs, total, err)
 	}
 
 	// a partitioned table's rows are its partitions'
-	recs, _, total, err = pg.ListRecords(ctx, "dbv_pp", "", 0, 10, "", "")
+	recs, _, total, _, err = pg.ListRecords(ctx, "dbv_pp", "", 0, 10, "", "")
 	if err != nil || total != 1 || len(recs) != 1 {
 		t.Fatalf("partitioned rows: %v %d %v", recs, total, err)
 	}
@@ -262,7 +262,7 @@ CREATE TABLE dbv_gen (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, n int,
 	if err != nil || len(cols) != 2 || cols[0].ColumnName != "n" || cols[0].DataType != "integer" {
 		t.Fatalf("materialized view columns: %+v %v", cols, err)
 	}
-	recs, _, total, err := pg.ListRecords(ctx, "dbv_mv", "", 0, 10, "", "")
+	recs, _, total, _, err := pg.ListRecords(ctx, "dbv_mv", "", 0, 10, "", "")
 	if err != nil || total != 1 || recs[0]["s"] != "a" {
 		t.Fatalf("materialized view rows: %v %d %v", recs, total, err)
 	}
@@ -280,7 +280,7 @@ CREATE TABLE dbv_gen (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, n int,
 	if err != nil || gcols[3].DataType != "ARRAY" {
 		t.Fatalf("array type: %+v %v", gcols, err)
 	}
-	ins, err := pg.CreateInsertStatement("dbv_gen")
+	ins, err := pg.CreateInsertStatement(context.Background(), "dbv_gen")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,5 +347,53 @@ func TestCellChangedMeanwhile(t *testing.T) {
 	_, _, err := pg.CellNow(ctx, "dbv_cc", "n", key, []any{"2"})
 	if err == nil || !strings.Contains(err.Error(), "row is gone") {
 		t.Fatalf("a missing row: %v", err)
+	}
+}
+
+// Big cells stop a result before its row limit.
+func TestBytesMax(t *testing.T) {
+	pg := testDB(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	q := "SELECT repeat('x', 8 << 20) FROM generate_series(1, 20)"
+	res, err := pg.QueryReadOnly(ctx, 1000, q)
+	if err != nil || !res.Truncated || len(res.Rows) != 9 {
+		t.Fatalf("query: %d rows, truncated %v, %v", len(res.Rows), res.Truncated, err)
+	}
+	st, err := pg.Run(ctx, q, 1000)
+	if err != nil || !st[0].Truncated || len(st[0].Rows) != 9 {
+		t.Fatalf("run: %v", err)
+	}
+}
+
+func TestGoStruct(t *testing.T) {
+	pg := testDB(t, "")
+	mustExec(t, pg, `DROP TABLE IF EXISTS "order-items";
+		CREATE TABLE "order-items" (
+			id bigint PRIMARY KEY, "order-id" integer NOT NULL, x text, "X" text,
+			"2nd" smallint, wait interval NOT NULL, price numeric(10,2) NOT NULL,
+			at timestamptz, doc jsonb, tags text[], url text NOT NULL, ok boolean)`)
+	s, err := pg.CreateGoStructDefinition(context.Background(), "order-items")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"type OrderItems struct {",
+		"\tF2nd *int16 `db:\"2nd\"`",
+		"\tAt *time.Time `db:\"at\"`",
+		"\tDoc json.RawMessage `db:\"doc\"`",
+		"\tID int64 `db:\"id\"`",
+		"\tOk *bool `db:\"ok\"`",
+		"\tOrderID int32 `db:\"order-id\"`",
+		"\tPrice string `db:\"price\"`",
+		"\tTags *string `db:\"tags\"`",
+		"\tURL string `db:\"url\"`",
+		"\tWait string `db:\"wait\"`",
+		"\tX *string `db:\"X\"`",
+		"\tX2 *string `db:\"x\"`",
+	} {
+		if !strings.Contains(s, want+"\n") {
+			t.Errorf("no %q in\n%s", want, s)
+		}
 	}
 }

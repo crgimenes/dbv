@@ -42,7 +42,8 @@ func debugEvent(op string, start time.Time, kv ...any) {
 }
 
 func debugValue(v any) string {
-	if err, ok := v.(error); ok {
+	err, ok := v.(error)
+	if ok {
 		v = err.Error()
 	}
 	s := fmt.Sprint(v)

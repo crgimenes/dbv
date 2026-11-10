@@ -34,7 +34,8 @@ func TestWritesNeedTheFlag(t *testing.T) {
 		if len(argv) > 1 {
 			name = "update"
 		}
-		if got := runCLI(name, argv); got != 2 {
+		got := runCLI(name, argv)
+		if got != 2 {
 			t.Errorf("%s without -write: exit %d, want 2", name, got)
 		}
 	}

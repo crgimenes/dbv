@@ -97,7 +97,8 @@ func TestDangerous(t *testing.T) {
 		"CREATE TYPE mood AS ENUM ('a')": "",
 	}
 	for sql, want := range cases {
-		if got := dangerous(sql); got != want {
+		got := dangerous(sql)
+		if got != want {
 			t.Errorf("%q: %q, want %q", sql, got, want)
 		}
 	}
@@ -202,7 +203,18 @@ func TestConstraints(t *testing.T) {
 // A query filtered by :where runs inside a subselect: its ;, a comment on
 // its last line and its ORDER BY must not break it.
 func TestWhereOnAQuery(t *testing.T) {
-	d := &tableData{sql: "-- dbv: db=x\nSELECT n FROM generate_series(1, 5) n\nORDER BY n DESC -- newest first\n;\n"}
+	for _, sql := range []string{
+		"-- dbv: db=x\nSELECT n FROM generate_series(1, 5) n\nORDER BY n DESC -- newest first\n;\n",
+		"-- dbv: db=x\n\nSELECT n FROM generate_series(1, 5) n; -- a note after\n",
+		"SELECT n FROM generate_series(1, 5) n WHERE ';' <> '' -- no ; at the end",
+	} {
+		whereOnAQuery(t, sql)
+	}
+}
+
+func whereOnAQuery(t *testing.T, sql string) {
+	t.Helper()
+	d := &tableData{sql: sql}
 	if d.querySQL() != d.sql {
 		t.Fatal("no where: the query as it is")
 	}
@@ -229,7 +241,11 @@ func TestMatViewDefRunsBack(t *testing.T) {
 		CREATE MATERIALIZED VIEW "Sales %" WITH (fillfactor = 90) AS SELECT id, v FROM dbv_ms;
 		CREATE UNIQUE INDEX dbv_ms_id ON "Sales %" (id);
 		COMMENT ON MATERIALIZED VIEW "Sales %" IS 'it''s daily';
-		GRANT SELECT ON "Sales %" TO dbv_reader`)
+		ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO PUBLIC;
+		REVOKE ALL ON "Sales %" FROM PUBLIC;
+		COMMENT ON COLUMN "Sales %".v IS 'value';
+		GRANT SELECT ON "Sales %" TO dbv_reader WITH GRANT OPTION`)
+	t.Cleanup(func() { mustExec(t, pg, `ALTER DEFAULT PRIVILEGES REVOKE SELECT ON TABLES FROM PUBLIC`) })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	rel, err := pg.Resolve(ctx, "Sales %")
@@ -243,11 +259,14 @@ func TestMatViewDefRunsBack(t *testing.T) {
 	for _, want := range []string{
 		`DROP MATERIALIZED VIEW "Sales %";`,
 		`CREATE MATERIALIZED VIEW "Sales %" WITH (fillfactor=90) AS`,
-		"WITH DATA;",
+		"WITH NO DATA;",
 		`CREATE UNIQUE INDEX dbv_ms_id ON public."Sales %" USING btree (id);`,
 		`COMMENT ON MATERIALIZED VIEW "Sales %" IS 'it''s daily';`,
-		`GRANT SELECT ON "Sales %" TO dbv_reader;`,
+		`GRANT SELECT ON "Sales %" TO dbv_reader WITH GRANT OPTION;`,
 		`ALTER MATERIALIZED VIEW "Sales %" OWNER TO postgres;`,
+		`REVOKE ALL ON "Sales %" FROM PUBLIC;`,
+		`COMMENT ON COLUMN "Sales %".v IS 'value';`,
+		`REFRESH MATERIALIZED VIEW "Sales %";`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("no %q in\n%s", want, script)
@@ -258,19 +277,131 @@ func TestMatViewDefRunsBack(t *testing.T) {
 		t.Fatalf("%v\n%s", err, script)
 	}
 	var idx, rows int
-	var grants bool
+	var grants, public bool
+	var colComment string
 	var comment string
 	err = pg.Get(&idx, `SELECT count(*) FROM pg_indexes WHERE indexname = 'dbv_ms_id'`)
 	if err == nil {
 		err = pg.Get(&comment, `SELECT obj_description('"Sales %"'::regclass, 'pg_class')`)
 	}
 	if err == nil {
-		err = pg.Get(&grants, `SELECT has_table_privilege('dbv_reader', '"Sales %"', 'SELECT')`)
+		err = pg.Get(&grants, `SELECT has_table_privilege('dbv_reader', '"Sales %"', 'SELECT WITH GRANT OPTION')`)
+	}
+	if err == nil {
+		err = pg.Get(&public, `SELECT has_table_privilege('public', '"Sales %"', 'SELECT')`)
+	}
+	if err == nil {
+		err = pg.Get(&colComment, `SELECT col_description('"Sales %"'::regclass, 2)`)
 	}
 	if err == nil {
 		err = pg.Get(&rows, `SELECT count(*) FROM "Sales %"`)
 	}
-	if err != nil || idx != 1 || comment != "it's daily" || !grants || rows != 2 {
-		t.Fatalf("index %d, comment %q, grants %v, rows %d: %v", idx, comment, grants, rows, err)
+	if err != nil || idx != 1 || comment != "it's daily" || !grants || public || colComment != "value" || rows != 2 {
+		t.Fatalf("index %d, comment %q, grants %v, public %v, column %q, rows %d: %v", idx, comment, grants, public, colComment, rows, err)
+	}
+}
+
+// A table's DDL runs back: it makes the same table elsewhere.
+func TestDDLRunsBack(t *testing.T) {
+	pg := testDB(t, "")
+	mustExec(t, pg, `DROP SCHEMA IF EXISTS dbv_copy CASCADE; DROP TABLE IF EXISTS dbv_dd, dbv_dp;
+		CREATE TABLE dbv_dp (id int PRIMARY KEY);
+		CREATE TABLE dbv_dd (
+			id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			"Code" varchar(8) NOT NULL DEFAULT 'x' UNIQUE,
+			parent int REFERENCES dbv_dp (id),
+			n numeric(10,2) CHECK (n > 0),
+			twice numeric GENERATED ALWAYS AS (n * 2) STORED);
+		CREATE INDEX dbv_dd_n ON dbv_dd (n) WHERE n > 1;
+		COMMENT ON TABLE dbv_dd IS 'it''s a table';
+		COMMENT ON COLUMN dbv_dd.n IS 'cents'`)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rel, err := pg.Resolve(ctx, "dbv_dd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ddl, err := pg.DDL(ctx, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ddl, "CREATE TABLE dbv_dd (\n    id ") || !strings.Contains(ddl, "\n    \"Code\" character varying(8) DEFAULT 'x'::character varying NOT NULL,\n    parent integer,") {
+		t.Fatalf("layout:\n%s", ddl)
+	}
+	copied := strings.NewReplacer("TABLE dbv_dd ", "TABLE dbv_copy.dbv_dd ", "ON public.dbv_dd ", "ON dbv_copy.dbv_dd ",
+		"COLUMN dbv_dd.", "COLUMN dbv_copy.dbv_dd.").Replace(ddl)
+	_, err = pg.RunDDL(ctx, "CREATE SCHEMA dbv_copy;\n"+copied)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, copied)
+	}
+	mustExec(t, pg, "DROP SCHEMA dbv_copy CASCADE")
+}
+
+func TestDDLPartitions(t *testing.T) {
+	pg := testDB(t, "")
+	mustExec(t, pg, `DROP TABLE IF EXISTS dbv_part, dbv_kid CASCADE;
+		CREATE TABLE dbv_part (id int, at date) PARTITION BY RANGE (at);
+		CREATE TABLE dbv_part_2026 PARTITION OF dbv_part FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+		DROP TABLE IF EXISTS dbv_mom_x CASCADE; CREATE TABLE dbv_mom_x (v text);
+		CREATE TABLE dbv_kid () INHERITS (dbv_mom_x)`)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for name, want := range map[string]string{
+		"dbv_part":      ") PARTITION BY RANGE (at);",
+		"dbv_part_2026": "ALTER TABLE dbv_part ATTACH PARTITION dbv_part_2026 FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');",
+		"dbv_kid":       ") INHERITS (dbv_mom_x);",
+	} {
+		rel, err := pg.Resolve(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ddl, err := pg.DDL(ctx, rel)
+		if err != nil || !strings.Contains(ddl, want) {
+			t.Fatalf("%s: %v\n%s", name, err, ddl)
+		}
+	}
+}
+
+// The guard holds the view to the object that was opened: renamed away and
+// replaced by another of the same name, nothing runs.
+func TestViewGuardIdentity(t *testing.T) {
+	pg := testDB(t, "")
+	mustExec(t, pg, `DROP VIEW IF EXISTS dbv_gv, dbv_gv_old; CREATE VIEW dbv_gv AS SELECT 1 AS x`)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rel, err := pg.Resolve(ctx, "dbv_gv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	def, raw, err := pg.ViewDef(ctx, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, pg, `ALTER VIEW dbv_gv RENAME TO dbv_gv_old; CREATE VIEW dbv_gv AS SELECT 1 AS x`)
+	_, err = pg.RunDDL(ctx, db.ViewGuard(rel, raw)+def)
+	if err == nil || !strings.Contains(err.Error(), "changed in the database") {
+		t.Fatalf("replaced another view: %v", err)
+	}
+	_, err = pg.RunDDL(ctx, "BEGIN; "+def+" COMMIT;")
+	if err == nil || !strings.Contains(err.Error(), "BEGIN inside") {
+		t.Fatalf("a transaction of its own in DDL: %v", err)
+	}
+}
+
+// A column named dbv_row does not stand for the row in U's guard.
+func TestUpdateGuardColumnNamedRow(t *testing.T) {
+	pg := testDB(t, "")
+	mustExec(t, pg, `DROP TABLE IF EXISTS dbv_rw; CREATE TABLE dbv_rw (id int PRIMARY KEY, dbv_row text, v text);
+		INSERT INTO dbv_rw VALUES (1, 'same', 'a')`)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stmt, err := pg.CreateUpdateStatement(ctx, "dbv_rw", []string{"id", "dbv_row", "v"}, []any{"1", "same", "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, pg, `UPDATE dbv_rw SET v = 'someone else'`)
+	n, err := pg.ExecTx(ctx, stmt)
+	if err != nil || n != 0 {
+		t.Fatalf("a change since was written over: %d %v\n%s", n, err, stmt)
 	}
 }

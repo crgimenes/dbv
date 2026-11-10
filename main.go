@@ -63,7 +63,8 @@ func maskDBURL(dbURL string) (string, error) {
 
 	if u.User != nil {
 		username := u.User.Username()
-		if _, ok := u.User.Password(); ok {
+		_, ok := u.User.Password()
+		if ok {
 			u.User = url.UserPassword(username, "...")
 		}
 	}
@@ -175,6 +176,20 @@ func readDBConfigs(name string) ([]db.DBConfig, error) {
 	return configs, nil
 }
 
+// notFound is what to say of an argument that is neither a command nor a
+// file: a bare word was more likely a command mistyped.
+func notFound(arg string) string {
+	if strings.ContainsAny(arg, "/.") {
+		return fmt.Sprintf("dbv: file not found: %q", arg)
+	}
+	msg := fmt.Sprintf("dbv: unknown command %q", arg)
+	near := nearCommand(arg)
+	if near != "" {
+		msg += fmt.Sprintf("; did you mean %s?", near)
+	}
+	return msg + " (dbv -h)"
+}
+
 func main() {
 	args := os.Args[1:]
 	if len(args) > 0 && isHelp(args[0]) {
@@ -229,7 +244,7 @@ func main() {
 	if len(files) > 0 {
 		for _, f := range files {
 			if !fileExists(f) {
-				fmt.Fprintf(os.Stderr, "dbv: file not found: %q\n", f)
+				fmt.Fprintln(os.Stderr, notFound(f))
 				os.Exit(2)
 			}
 			configs = append(configs, loadDBConfigs(f)...)

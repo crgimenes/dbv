@@ -25,8 +25,13 @@ type TableInfo struct {
 // queryType is a .sql file of the user's; "view" is the database's alone.
 const queryType = "query"
 
-func getTableList(pg *db.Postgres) ([]TableInfo, error) {
-	lt, err := pg.ListTablesAndViews()
+func getTableList(a *app) ([]TableInfo, error) {
+	var lt []db.TableInfo
+	err := a.busy("reading the tables", func(ctx context.Context) error {
+		var err error
+		lt, err = a.pg.ListTablesAndViews(ctx)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +93,7 @@ func newTableList(a *app) view {
 }
 
 func (l *tableList) reload(a *app) {
-	data, err := getTableList(a.pg)
+	data, err := getTableList(a)
 	if err != nil {
 		a.fail(err)
 	}
@@ -207,8 +212,6 @@ func (l *tableList) open(a *app) {
 	a.push(v)
 }
 
-// edit opens what is under the cursor as text: a query's file, a view's
-// CREATE OR REPLACE.
 func (l *tableList) edit(a *app) {
 	if len(l.shown) == 0 {
 		return
@@ -231,15 +234,13 @@ func (l *tableList) edit(a *app) {
 	}
 }
 
-var listCommands = []string{"clear", "reload", "rename", "query", "view", "table", "sql", "connections", "help", "quit"}
+var listCommands = []string{"clear", "reload", "rename", "query", "view", "table", "schema", "sql", "connections", "help", "quit"}
 
-// nextKind shows the next kind of row only, the filter kept.
 func (l *tableList) nextKind(a *app) {
 	l.kind = (l.kind + 1) % len(kindsShown)
 	l.apply(a, l.filter)
 }
 
-// newQuery asks for a name when there is none, then opens the new query.
 func (l *tableList) newQuery(a *app, name string) {
 	if name != "" {
 		l.saved(a, name, queryType, editQuery(a, name, ""))
@@ -316,6 +317,16 @@ func (l *tableList) command(a *app, line string) {
 		runSQL(a)
 	case "connections":
 		toConnections(a)
+	case "schema":
+		if len(l.shown) == 0 {
+			return
+		}
+		t := l.shown[l.table.Cursor]
+		if t.Type == queryType {
+			a.say(kit.Warn, "a query of yours: e opens its file")
+			return
+		}
+		showSchema(a, t.Name)
 	case "query":
 		l.newQuery(a, "")
 	case "view", "table":
@@ -381,6 +392,7 @@ var listHelp = []string{
 	":reload       read the table list again",
 	":rename       rename the table, view or query under the cursor",
 	":sql          write SQL in $EDITOR and run it (writes too)",
+	":schema       the DDL of what is under the cursor, in $EDITOR to read",
 	":connections  the connections menu: open, add, edit, remove",
 	"n :query NAME a new query of yours, written in $EDITOR",
 	":view NAME    a new view in the database, written in $EDITOR",

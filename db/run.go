@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -43,9 +44,11 @@ func (pg *Postgres) RunReadOnly(ctx context.Context, sqlText string, limit int) 
 // behind it: on a busy table, failing soon is the lesser harm.
 const LockWait = "5s"
 
-// RunDDL is Run for a change of structure: it gives up when a lock does
-// not come within LockWait.
 func (pg *Postgres) RunDDL(ctx context.Context, sqlText string) ([]Statement, error) {
+	w := txControl(sqlText)
+	if w != "" { // a COMMIT inside would keep a DROP whose CREATE then fails
+		return nil, fmt.Errorf("%s inside the SQL: it already runs as one transaction", w)
+	}
 	return pg.run(ctx, sqlText, 1, "SET lock_timeout = '"+LockWait+"'")
 }
 
@@ -88,8 +91,9 @@ func (pg *Postgres) run(ctx context.Context, sqlText string, limit int, setup st
 				}
 				st.Columns = append(st.Columns, ColumnInfo{ColumnName: f.Name, DataType: name})
 			}
+			size := 0
 			for rr.NextRow() {
-				if len(st.Rows) == limit {
+				if len(st.Rows) == limit || size > BytesMax {
 					st.Truncated = true
 					continue // the rest is read off the wire, not kept
 				}
@@ -99,6 +103,7 @@ func (pg *Postgres) run(ctx context.Context, sqlText string, limit int, setup st
 					if v != nil {
 						row[i] = string(v)
 					}
+					size += len(v)
 				}
 				st.Rows = append(st.Rows, row)
 			}

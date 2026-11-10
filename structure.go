@@ -46,24 +46,31 @@ func newStructView(a *app, name string) (*structView, error) {
 	return s, s.read(a)
 }
 
+// read takes the structure in once busy is over: busy paints this
+// screen meanwhile.
 func (s *structView) read(a *app) error {
-	return a.busy("reading "+s.name, func(ctx context.Context) error {
-		rel, err := a.pg.Resolve(ctx, s.name)
+	var rel db.Rel
+	var cols []db.Column
+	var cons []db.Constraint
+	err := a.busy("reading "+s.name, func(ctx context.Context) error {
+		var err error
+		rel, err = a.pg.Resolve(ctx, s.name)
 		if err != nil {
 			return err
 		}
-		cols, err := a.pg.Structure(ctx, rel)
+		cols, err = a.pg.Structure(ctx, rel)
 		if err != nil {
 			return err
 		}
-		cons, err := a.pg.Constraints(ctx, rel)
-		if err != nil {
-			return err
-		}
-		s.rel, s.cols, s.cons = rel, cols, cons
-		s.row = max(0, min(s.row, s.count()-1))
-		return nil
+		cons, err = a.pg.Constraints(ctx, rel)
+		return err
 	})
+	if err != nil {
+		return err
+	}
+	s.rel, s.cols, s.cons = rel, cols, cons
+	s.row = max(0, min(s.row, s.count()-1))
+	return nil
 }
 
 func (s *structView) count() int { return len(s.cols) + len(s.cons) }
@@ -213,7 +220,7 @@ func (s *structView) key(a *app, k screen.Key) {
 	}
 }
 
-var structCommands = []string{"add", "constraint", "reload", "sql", "connections", "quit"}
+var structCommands = []string{"add", "constraint", "reload", "schema", "sql", "connections", "quit"}
 
 func (s *structView) command(a *app, line string) {
 	cmd := strings.TrimSpace(line)
@@ -227,6 +234,8 @@ func (s *structView) command(a *app, line string) {
 		runSQL(a)
 	case cmd == "connections":
 		toConnections(a)
+	case cmd == "schema":
+		showSchema(a, s.name)
 	case cmd == "constraint" || cmd == "index":
 		s.addCon(a)
 	case cmd == "add" || strings.HasPrefix(cmd, "add "):
@@ -252,11 +261,11 @@ var structHelp = []string{
 	"",
 	":reload       read the structure again",
 	":sql          write SQL in $EDITOR and run it",
+	":schema       the table's DDL, in $EDITOR to read",
 	":connections  the connections menu",
 	"esc q :q      back",
 }
 
-// alter is the head every column statement shares.
 func (s *structView) alter() string { return "ALTER TABLE " + s.rel.SQL }
 
 // edit writes the statement that changes the field under the cursor.

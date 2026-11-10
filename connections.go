@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,37 +18,60 @@ import (
 	"github.com/crgimenes/dbv/db"
 )
 
+// errConfigChanged is a config file changed since it was read.
+var errConfigChanged = errors.New("the config file changed since dbv read it (another dbv, or by hand): nothing written; open dbv again")
+
 // writeDBConfigs writes configs to path as (database url title views)
-// lines, the old file kept beside it as path.bak. What else the old file
-// held (comments, variables, an environment lookup) is not kept: the
-// connections as read are what is written.
-func writeDBConfigs(path string, configs []db.DBConfig) error {
+// lines, the old file kept beside it as path.bak, both 0600 and each
+// replaced whole. What else the old file held (comments, variables, an
+// environment lookup) is not kept. A link is followed to the file it names.
+// The file must still be read (nil: it was not there); the new contents
+// are what the next write expects.
+// yagni: two writes in the same instant can both pass the check; a lock
+// file would close that.
+func writeDBConfigs(path string, configs []db.DBConfig, read []byte) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("; dbv connections: (database url title views), written by dbv\n")
 	for _, c := range configs {
 		fmt.Fprintf(&b, "(database %s %s %s)\n", filoString(c.URL), filoString(c.Title), filoString(c.ViewsPath))
 	}
+	real, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		path = real
+	}
+	old, err := os.ReadFile(filepath.Clean(path))
+	exists := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if !bytes.Equal(old, read) || exists != (read != nil) {
+		return nil, errConfigChanged
+	}
+	if exists {
+		err = replaceFile(path+".bak", old)
+		if err != nil {
+			return nil, err
+		}
+	}
+	data := []byte(b.String())
+	return data, replaceFile(path, data)
+}
+
+// replaceFile puts data at path through a new 0600 file renamed over it:
+// whatever was there, a link or a file open to others, is replaced, not
+// written through.
+func replaceFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	err := os.MkdirAll(dir, 0o700)
 	if err != nil {
 		return err
 	}
-	old, err := os.ReadFile(filepath.Clean(path))
-	switch {
-	case err == nil:
-		err = os.WriteFile(path+".bak", old, 0o600) // #nosec G703 -- dbv's own config path, or the file the user named
-		if err != nil {
-			return err
-		}
-	case !errors.Is(err, os.ErrNotExist):
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".init-*.filo")
+	tmp, err := os.CreateTemp(dir, ".dbv-*")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
-	_, err = tmp.WriteString(b.String())
+	_, err = tmp.Write(data)
 	cerr := tmp.Close()
 	if err == nil {
 		err = cerr
@@ -55,7 +79,7 @@ func writeDBConfigs(path string, configs []db.DBConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path) // CreateTemp made it 0600
+	return os.Rename(tmp.Name(), path) // #nosec G703 -- dbv's own config path, or the file the user named
 }
 
 // filoString is s as a Filo string literal, on one line.
@@ -108,18 +132,23 @@ func newConnForm(m *dbMenu, at int) *connForm {
 	if at >= 0 {
 		c = m.configs[at]
 	}
-	shown := c.URL
+	shown := ""
 	if c.URL != "" {
 		masked, err := maskDBURL(c.URL)
-		if err == nil {
-			shown = masked
+		shown = masked
+		if err != nil {
+			shown = "" // what does not parse cannot be masked: it is not shown
 		}
 	}
-	return &connForm{menu: m, at: at, form: kit.NewForm([]kit.Field{
-		{Kind: kit.TextField, Label: "Title", Width: 60, Max: 200, Value: c.Title},
-		{Kind: kit.TextField, Label: "URL", Width: 60, Max: 2048, Value: shown},
-		{Kind: kit.TextField, Label: "Queries dir", Width: 60, Max: 1024, Value: c.ViewsPath},
+	f := &connForm{menu: m, at: at, form: kit.NewForm([]kit.Field{
+		{Kind: kit.TextField, Label: "Title", Width: 60, Max: max(200, len(c.Title)), Value: c.Title},
+		{Kind: kit.TextField, Label: "URL", Width: 60, Max: max(4096, len(shown)), Value: shown},
+		{Kind: kit.TextField, Label: "Queries dir", Width: 60, Max: max(1024, len(c.ViewsPath)), Value: c.ViewsPath},
 	}, "Save", "Test", "Cancel")}
+	if c.URL != "" && shown == "" {
+		f.form.Fail(cfURL, "the stored URL does not parse; type it again")
+	}
+	return f
 }
 
 func (f *connForm) title() string {
@@ -183,17 +212,18 @@ func (f *connForm) key(a *app, k screen.Key) {
 			return
 		}
 		configs := append([]db.DBConfig(nil), f.menu.configs...)
-		if f.at < 0 {
-			configs = append(configs, cfg)
-		} else {
-			configs[f.at] = cfg
+		at := f.at
+		if at < 0 {
+			at = len(configs)
+			configs = append(configs, db.DBConfig{})
 		}
-		err := writeDBConfigs(f.menu.file, configs)
+		configs[at] = cfg
+		data, err := writeDBConfigs(f.menu.file, configs, f.menu.read)
 		if err != nil {
 			f.form.Note = err.Error()
 			return
 		}
-		f.menu.configs = configs
+		f.menu.configs, f.menu.read = configs, data
 		a.pop()
 		a.say(kit.OK, "%s saved in %s", cfg.Title, tildePath(f.menu.file))
 	}

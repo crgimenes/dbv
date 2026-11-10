@@ -10,7 +10,7 @@
 - **Data Browsing**: Scroll through table records with built-in pagination.
 - **Cell Editing**: Edit cell values directly with automatic conversions for timestamps and numeric types.
 - **Insert Statement Generation**: Create template SQL INSERT statements that include default values and respect primary key order.
-- **Go Struct Generation**: Generate Go struct definitions based on table columns (mapping PostgreSQL types to Go types).
+- **Go Struct Generation**: Generate Go struct definitions from a table's columns: Go names (`order-id` → `OrderID`, a clash numbered), types by exact PostgreSQL type (`numeric` as `string`, exact), nullable columns as pointers.
 - **SQL**: `:sql` writes SQL in `$EDITOR` and runs it, several statements in one transaction (a `BEGIN` left open is rolled back); rows that come back show as a grid. Text left unchanged runs nothing.
 - **Export**: `:export FILE.csv` or `FILE.json` writes every row of the current filter; `y`/`Y` copy a cell or a row to the clipboard.
 - **Queries**: `.sql` files of yours in a views directory appear in the table list as `query`; `{{name:type:title:order}}` tokens become a form to fill in before the query runs (read only). "View" is only ever a view in the database.
@@ -53,7 +53,7 @@ You can also download the pre-built binaries from the [GitHub Releases](https://
 
 ## Configuration
 
-By default, dbv loads database connections from a [Filo](https://github.com/crgimenes/filo) file named `init.filo`. Place this file in the platform's config directory — `~/Library/Application Support/dbv/init.filo` on macOS, `~/.config/dbv/init.filo` on Linux (or `$XDG_CONFIG_HOME/dbv`) — or in the current directory. Each connection is declared with `(database url [title] [views])`: the URL is required, the title is optional (it defaults to the URL with the password masked), and an optional third argument points to the directory of your queries (`.sql` files). The connections menu, the first screen, writes this file for you: `a` adds a connection, `e` edits the one under the cursor, `D` removes it (after `y`), each in a form with a `Test` button; the file is then rewritten as one `(database ...)` line per connection, the previous one kept as `init.filo.bak`, so comments or Filo code in it are not kept. In the form, a password shows as `...` and stays as it was while left so; a new one shows while it is typed (`~/.pgpass` keeps it off the URL). With no file yet, dbv opens on the empty menu. With one connection, dbv opens it at once and `Esc` on the table list goes back to the menu. For example:
+By default, dbv loads database connections from a [Filo](https://github.com/crgimenes/filo) file named `init.filo`. Place this file in the platform's config directory — `~/Library/Application Support/dbv/init.filo` on macOS, `~/.config/dbv/init.filo` on Linux (or `$XDG_CONFIG_HOME/dbv`) — or in the current directory. Each connection is declared with `(database url [title] [views])`: the URL is required, the title is optional (it defaults to the URL with the password masked), and an optional third argument points to the directory of your queries (`.sql` files). The connections menu, the first screen, writes this file for you: `a` adds a connection, `e` edits the one under the cursor, `D` removes it (after `y`), each in a form with a `Test` button; the file is then rewritten as one `(database ...)` line per connection, the previous one kept as `init.filo.bak` (both 0600; a link is followed to the file it names), so comments or Filo code in it are not kept. If the file changed since dbv read it (another dbv, or by hand), nothing is written. In the form, a password shows as `...` and stays as it was while left so; a new one shows while it is typed (`~/.pgpass` keeps it off the URL). With no file yet, dbv opens on the empty menu. With one connection, dbv opens it at once and `Esc` on the table list goes back to the menu. For example:
 
 ```scheme
 (database "postgres://username:password@localhost:5432/mydb?sslmode=disable" "LocalDB")
@@ -78,7 +78,8 @@ locally; `sshalias` takes user, host, port and key from `~/.ssh/config`
 
 A query of yours is `NAME.sql` in the views directory (the third argument of
 `database`). Tokens `{{name:type:title:order}}` are asked for in a form and
-replaced by what is typed; only `name` is required:
+replaced by what is typed; only `name` is required. A name used twice is one
+field, filling both:
 
 ```sql
 SELECT id, name FROM users WHERE id BETWEEN {{lo::From id:1}} AND {{hi::To id:2}}
@@ -106,7 +107,9 @@ dbv
 `dbv COMMAND [flags] [args]` answers once and exits, without the
 interactive interface. The reading commands never write: `rows` and
 `query` run a single statement inside a `READ ONLY` transaction, and the
-others read the catalog with fixed queries. `exec` and `update` change data
+others read the catalog with fixed queries. `dbv COMMAND -h` shows that
+command alone; a flag that is not its own is refused. A result keeps at most
+`-limit` rows and 64 MB. `exec` and `update` change data
 and refuse to run without `-write`.
 
 ```bash
@@ -173,7 +176,8 @@ redraws, and `Ctrl-F`/`Ctrl-B` page like `PgDn`/`PgUp`.
 
 Table data:
 
-- `↑↓←→` / `h j k l`, `PgUp PgDn`: move; `g G`: first and last row; `Home End`: first and last column
+- `↑↓←→` / `h j k l`, `PgUp PgDn`: move; `g G`: first and last row (`G` reads to the end of the table, up to 10,000 rows at once); `Home End`: first and last column. The table is counted once, when it opens; later pages read only their rows
+- `:schema`: the table's DDL in `$EDITOR`, laid out to read (also on the list, for what is under the cursor, and on the structure screen); nothing saved there runs
 - `Enter`, `p`: view the cell in `$PAGER`
 - `e`, `v`: edit the cell in `$EDITOR` (saved to the table; needs a primary key). The editor starts from the cell as the database has it now, and the save writes only while it still is: a value another session changed meanwhile is not overwritten (dbv says so, shows the new value and puts what you typed on the clipboard)
 - `/`, `n`, `N`: search the rows read so far (regular expression), next, previous
@@ -182,10 +186,10 @@ Table data:
 - On a query or a `:sql` result, `o`/`O` sort the rows in memory (NULLs as PostgreSQL puts them; `:order` restores how they came), and `:sql` starts from the query's SQL with its parameters filled
 - `:where COND` on a query runs it again, read only, inside a subselect (`SELECT * FROM (…) AS q WHERE COND`), the sort kept; `:sql` and `:query NAME` then start from that SQL. A `:sql` result is not run again, since it may have written
 - `n` or `:query NAME` on the table list: a new query of yours, written in `$EDITOR` and kept in the connection's views directory (the one its config names, else `views/<title>` under dbv's config directory); `:wq` keeps it, `:q!` keeps nothing. `:query NAME` on a grid starts the query from the grid's SELECT
-- `:view NAME`, on the table list or a grid (starting from its SELECT): a new view in the database, written in `$EDITOR` as `CREATE VIEW` and run when saved. `e` on a view opens `CREATE OR REPLACE VIEW` with its options and its SELECT as the server prints it: columns can be added at the end; to drop or rename one, start the text with `DROP VIEW`. A failed statement opens again with the error on top, under the `-- dbv: db=` line; quitting without saving runs nothing. `e` on a materialized view, which has no `OR REPLACE`, opens the statements that make it again: `DROP`, `CREATE … WITH DATA` (or `NO DATA`, as it was), its indexes, comment, grants and owner, all in one transaction, asking `y/N` for the drop. A view or materialized view changed in the database while it was open in the editor is not replaced: the run fails with a note to open it again
+- `:view NAME`, on the table list or a grid (starting from its SELECT): a new view in the database, written in `$EDITOR` as `CREATE VIEW` and run when saved. `e` on a view opens `CREATE OR REPLACE VIEW` with its options and its SELECT as the server prints it: columns can be added at the end; to drop or rename one, start the text with `DROP VIEW`. A failed statement opens again with the error on top, under the `-- dbv: db=` line; quitting without saving runs nothing. `e` on a materialized view, which has no `OR REPLACE`, opens the statements that make it again, all in one transaction, asking `y/N` for the drop: `DROP`, `CREATE … WITH NO DATA` (options and tablespace kept), its indexes, comments, owner and exactly its grants (what default privileges would add is revoked), then `REFRESH`, which PostgreSQL runs as the owner, so the rows are the ones the owner sees. A view or materialized view changed in the database while it was open in the editor, or renamed and replaced by another, is not replaced: the run fails with a note to open it again. `BEGIN`/`COMMIT` in that text are refused: it already runs as one transaction
 - `:structure`: the table's columns (below)
 - `x`: hide this column (`:show` brings them all back); `:sql` on a table starts as the grid's SELECT: its shown columns, `:where` and order
-- `I`, `S`, `J`, `U`: INSERT template, Go struct, JSON of the row, UPDATE of the row (INSERT and UPDATE run when saved changed). `U` starts from the row as the database has it and ends with `AND dbv_row::text = '…'`, the whole row as read: if the row changed since, it updates nothing (`UPDATE 0`); delete that line to write over it
+- `I`, `S`, `J`, `U`: INSERT template, Go struct, JSON of the row, UPDATE of the row (INSERT and UPDATE run when saved changed). `U` starts from the row as the database has it and ends with `AND ROW(dbv_row.*)::text = '…'`, the whole row as read: if the row changed since, it updates nothing (`UPDATE 0`); delete that line to write over it
 - `:`: command line; `?`: help
 - `Esc`, `q`, `:q`: back to the table list
 
@@ -216,8 +220,11 @@ open it, by title or number as in `-db`:
 select * from clientes cl where cl.
 ```
 
-With neither, or when the database cannot be reached, it completes SQL
-words alone and says why once; a loose `.sql` never breaks. The catalog is
+With neither, it takes the only connection configured, as `:DBVRun` does;
+with several, or when the database cannot be reached, it completes SQL
+words alone and says why once; a loose `.sql` never breaks. A name is
+quoted when PostgreSQL needs it (case, spaces, a keyword such as
+`constraint`), and completing inside a word replaces all of it. The catalog is
 read once per database, in one read-only query, in the background.
 
 With coc.nvim, in `coc-settings.json`:
@@ -240,7 +247,7 @@ vim.lsp.enable('dbv')
 `neovim/dbv.lua` runs the statement under the cursor, or the selection,
 and shows its rows in dbv's grid in a split below; `q` closes it.
 `:DBVRun` runs the statement at the cursor; from visual mode
-(`:'<,'>DBVRun`) the selection; with a range of lines, those lines. It maps
+(`:'<,'>DBVRun`) the selection, a block (`Ctrl-V`) too; with a range of lines, those lines. It maps
 no keys; to have one, `vim.keymap.set("n", "<leader>t", "<cmd>DBVRun<CR>")`.
 Load it from your config:
 

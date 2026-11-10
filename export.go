@@ -134,9 +134,10 @@ func (d *tableData) export(a *app, path string) {
 		a.fail(err) // an existing file says "file exists": nothing is overwritten
 		return
 	}
-	if ext == ".csv" {
+	switch ext {
+	case ".csv":
 		err = writeCSV(f, ',', res, "")
-	} else {
+	default:
 		err = encodeJSON(f, resultJSON(res))
 	}
 	cerr := f.Close()

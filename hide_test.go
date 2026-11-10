@@ -21,7 +21,8 @@ func TestHiddenColumns(t *testing.T) {
 	if d.col != 0 {
 		t.Fatalf("left skips the hidden: col %d", d.col)
 	}
-	if got := d.selectList(); got != "id, b, c" {
+	got := d.selectList()
+	if got != "id, b, c" {
 		t.Fatalf("%q", got)
 	}
 	d.col = 3
