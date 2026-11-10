@@ -73,7 +73,7 @@ func TestFreeName(t *testing.T) {
 func TestRepeatedParameterIsOneField(t *testing.T) {
 	sql := "SELECT * FROM t WHERE a = {{id}} OR b = {{ id :int:The id}} OR c = {{other}}"
 	params := ExtractParameters(sql)
-	if len(params) != 2 || params[0].Name != "id" || params[0].Type != "int" || params[0].Title != "The id" {
+	if len(params) != 2 || params[0].Name != "id" || params[0].Title != "The id" {
 		t.Fatalf("%+v", params)
 	}
 	got := fillParameters(sql, params, []string{"7", "x"})

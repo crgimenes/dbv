@@ -13,10 +13,10 @@ import (
 	"github.com/crgimenes/filo-term-go/screen"
 )
 
-// Parameter is a {{name:type:title:order}} token in a query's SQL.
+// Parameter is a {{name::title:order}} token in a query's SQL; the
+// second slot, once a type, is skipped.
 type Parameter struct {
 	Name       string // required
-	Type       string // default "string"
 	Title      string // default equals Name
 	ZOrder     int    // custom order; default order of occurrence
 	Occurrence int    // internal order if ZOrder are equal
@@ -25,8 +25,8 @@ type Parameter struct {
 var paramToken = regexp.MustCompile(`\{\{(.*?)\}\}`)
 
 // ExtractParameters is a query's parameters, one per name: {{id}} used
-// twice is one field, filling both. A type, title or order given on any of
-// its tokens counts, the first one given winning.
+// twice is one field, filling both. A title or order given on any of its
+// tokens counts, the first one given winning.
 func ExtractParameters(sqlStr string) []Parameter {
 	var params []Parameter
 	seen := map[string]int{}
@@ -38,10 +38,7 @@ func ExtractParameters(sqlStr string) []Parameter {
 		if fields[0] == "" {
 			continue
 		}
-		p := Parameter{Name: fields[0], Occurrence: i, Type: "string", Title: fields[0], ZOrder: i}
-		if len(fields) >= 2 && fields[1] != "" {
-			p.Type = fields[1]
-		}
+		p := Parameter{Name: fields[0], Occurrence: i, Title: fields[0], ZOrder: i}
 		if len(fields) >= 3 && fields[2] != "" {
 			p.Title = fields[2]
 		}
@@ -58,9 +55,6 @@ func ExtractParameters(sqlStr string) []Parameter {
 			continue
 		}
 		q := &params[at]
-		if q.Type == "string" && len(fields) >= 2 && fields[1] != "" {
-			q.Type = p.Type
-		}
 		if q.Title == q.Name {
 			q.Title = p.Title
 		}

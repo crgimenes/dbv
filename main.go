@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/crgimenes/filo"
@@ -212,18 +213,7 @@ func main() {
 		}
 	}
 
-	selectMode := false
-	var files []string
-	for _, arg := range args {
-		switch arg {
-		case "-s":
-			selectMode = true
-		case "-debug":
-			debugOut = os.Stderr
-		default:
-			files = append(files, arg)
-		}
-	}
+	files, want := tuiArgs(args)
 	if debugOut != nil && stderrIsTerminal() {
 		fmt.Fprintln(os.Stderr, "dbv: -debug writes to stderr, which is this screen; redirect it: dbv -debug 2>dbv.log")
 		os.Exit(2)
@@ -252,17 +242,41 @@ func main() {
 		}
 	}
 
-	first := newTableList
-	if selectMode {
-		first = newSelector(selectorOutputFile)
-	}
 	file := ""
 	if len(configFiles) == 1 {
 		file = configFiles[0]
 	}
-	err := runTUI(configs, file, first)
+	open := -1
+	if want != "" || len(configs) == 1 {
+		cfg, err := pickConfig(configs, want)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "dbv:", err)
+			os.Exit(2)
+		}
+		open = slices.Index(configs, cfg)
+	}
+	err := runTUI(configs, file, open)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dbv:", err)
 		os.Exit(1)
 	}
+}
+
+// tuiArgs reads the interface's arguments: config files, -db NAME, -debug.
+func tuiArgs(args []string) (files []string, want string) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-debug":
+			debugOut = os.Stderr
+		case arg == "-db" && i+1 < len(args):
+			i++
+			want = args[i]
+		case strings.HasPrefix(arg, "-db="):
+			want = strings.TrimPrefix(arg, "-db=")
+		default:
+			files = append(files, arg)
+		}
+	}
+	return files, want
 }

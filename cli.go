@@ -16,7 +16,7 @@ import (
 	"github.com/crgimenes/dbv/db"
 )
 
-const usage = `dbv [-s] [-debug] [file.filo ...]
+const usage = `dbv [-db NAME] [-debug] [file.filo ...]
 dbv COMMAND [flags] [args]
 
 Terminal viewer and editor for PostgreSQL. With no command it opens the
@@ -26,7 +26,8 @@ directory (macOS: ~/Library/Application Support/dbv, Linux:
 ~/.config/dbv), or ./init.filo; files named instead replace it.
 
 Interface flags:
-  -s           selector: pick a name, struct or INSERT into /tmp/dbv_output.txt
+  -db NAME     open this connection (title or 1-based number) at once;
+               without it, the only one, else the connections menu
   -debug       one line per event on stderr; redirect it (2>dbv.log), since
                the interface owns the terminal
 

@@ -13,7 +13,7 @@
 - **Go Struct Generation**: Generate Go struct definitions from a table's columns: Go names (`order-id` → `OrderID`, a clash numbered), types by exact PostgreSQL type (`numeric` as `string`, exact), nullable columns as pointers.
 - **SQL**: `:sql` writes SQL in `$EDITOR` and runs it, several statements in one transaction (a `BEGIN` left open is rolled back); rows that come back show as a grid. Text left unchanged runs nothing.
 - **Export**: `:export FILE.csv` or `FILE.json` writes every row of the current filter; `y`/`Y` copy a cell or a row to the clipboard.
-- **Queries**: `.sql` files of yours in a views directory appear in the table list as `query`; `{{name:type:title:order}}` tokens become a form to fill in before the query runs (read only). "View" is only ever a view in the database.
+- **Queries**: `.sql` files of yours in a views directory appear in the table list as `query`; `{{name::title:order}}` tokens become a form to fill in before the query runs (read only). "View" is only ever a view in the database.
 - **Table Structure**: `e` on a table (or `:structure` on its grid) lists its columns with type, null, default, key and comment, then its constraints and indexes; each change is the `ALTER TABLE` for it, written in `$EDITOR`.
 - **Database Views**: `e` on a view opens it in `$EDITOR` as `CREATE OR REPLACE VIEW`, and `:view NAME` writes a new one; what is saved runs, and an error brings the text back with the error on top.
 - **SSH Tunnel**: `ssh+postgres://` URLs reach a database through ssh, reading `~/.ssh/config`.
@@ -77,8 +77,9 @@ locally; `sshalias` takes user, host, port and key from `~/.ssh/config`
 ```
 
 A query of yours is `NAME.sql` in the views directory (the third argument of
-`database`). Tokens `{{name:type:title:order}}` are asked for in a form and
-replaced by what is typed; only `name` is required. A name used twice is one
+`database`). Tokens `{{name::title:order}}` are asked for in a form and
+replaced by what is typed; only `name` is required (the second slot is
+unused: a type written there is ignored). A name used twice is one
 field, filling both:
 
 ```sql
@@ -94,13 +95,16 @@ After installing, simply run:
 dbv
 ```
 
+It opens the connections menu, or the tables of the only connection.
+`dbv -db NAME` (a title or a 1-based number, as `dbv dbs` lists them) opens
+that connection at once; if it fails, the menu stays with the error.
+
 ### Functionality
 
 - **Table Listing & Filtering**: Easily navigate and filter available tables.
 - **Data Viewing & Editing**: Scroll through records, edit cells, and generate SQL/struct/JSON using quick commands.
-- **Commands**: `:where COND`, `:order`, `:show` (bring hidden columns back), `:insert`, `:struct`, `:json`, `:update` and `:export FILE` on a table; `:clear`, `:reload`, `:rename` and `:quit` on the table list; `:sql` on both. `↑↓` on the command line bring back what was typed on that screen, in this run or an earlier one, and a view's form opens with the values it last ran with. The lines are kept (0600, at most 100 per prompt) in `~/Library/Application Support/dbv/history.json` on macOS, `$XDG_STATE_HOME/dbv/history.json` (`~/.local/state`) on Linux and the BSDs. On a table's command line, `Tab` completes the command and, in a `:where`, column names and SQL words (`and`, `like`, `between`, `is null`...); when several match, a bar opens above the line: `Tab`/`→` and `Shift-Tab`/`←` walk it, `Enter` takes the word, `Esc` goes back to what was typed. The grid's cursor follows the column chosen, so its data shows while the condition is written. `Tab` on an empty line lists every command; the table list's `:` completes its commands too, and `Tab` in a `/` filter (table list, `-s` picker) completes table names, the list following the bar.
+- **Commands**: `:where COND`, `:order`, `:show` (bring hidden columns back), `:insert`, `:struct`, `:json`, `:update` and `:export FILE` on a table; `:clear`, `:reload`, `:rename` and `:quit` on the table list; `:sql` on both. `↑↓` on the command line bring back what was typed on that screen, in this run or an earlier one, and a view's form opens with the values it last ran with. The lines are kept (0600, at most 100 per prompt) in `~/Library/Application Support/dbv/history.json` on macOS, `$XDG_STATE_HOME/dbv/history.json` (`~/.local/state`) on Linux and the BSDs. On a table's command line, `Tab` completes the command and, in a `:where`, column names and SQL words (`and`, `like`, `between`, `is null`...); when several match, a bar opens above the line: `Tab`/`→` and `Shift-Tab`/`←` walk it, `Enter` takes the word, `Esc` goes back to what was typed. The grid's cursor follows the column chosen, so its data shows while the condition is written. `Tab` on an empty line lists every command; the table list's `:` completes its commands too, and `Tab` in a `/` filter (table list) completes table names, the list following the bar.
 - **Long queries**: a spinner shows after a tenth of a second, and `Esc` cancels the query on the server.
-- **Selector mode**: `dbv -s` picks a table or column name (Space), a Go struct (`S`) or an INSERT (`I`) and writes it to `/tmp/dbv_output.txt`, for an editor running beside dbv to insert.
 
 ### Command line (scripts and agents)
 
@@ -255,6 +259,17 @@ Load it from your config:
 -- ~/.config/nvim/lua/dbv.lua linked to the repository's neovim/dbv.lua
 require "dbv"
 ```
+
+`:DBV` lists the configured connections (`vim.ui.select`) and opens dbv on
+the one picked, in a split below; `:DBV NAME` skips the list, and `Tab`
+completes the titles. It is `dbv -db NAME`; the split closes when dbv quits.
+
+`:DBVConnect` picks the buffer's connection the same way (`:DBVConnect NAME`,
+`Tab` completes) without opening dbv and without touching the file: `dbv
+lsp` completes with it (the command `dbv.connect`, sent through nvim's LSP
+client or coc), and `:DBVRun` and `:DBVInfo` use it. It wins over the
+file's `-- dbv: db=` line and over the dbv nvim runs under, for that buffer
+and while nvim runs.
 
 `:DBVInfo` opens a float (`q` closes it) with the connection the buffer
 gets and why (the dbv nvim runs under, the file's `-- dbv: db=` line, the

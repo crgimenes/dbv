@@ -522,8 +522,8 @@ func (a *app) connect(cfg db.DBConfig, n int) error {
 // runTUI starts on the connections menu; with one connection it opens it
 // at once, the menu under it for Esc to reach. file is the config the menu
 // writes, "" when several were read.
-func newDBMenu(configs []db.DBConfig, file string, next func(a *app) view) *dbMenu {
-	m := &dbMenu{configs: configs, file: file, next: next}
+func newDBMenu(configs []db.DBConfig, file string) *dbMenu {
+	m := &dbMenu{configs: configs, file: file}
 	if file != "" {
 		m.read, _ = os.ReadFile(filepath.Clean(file)) // #nosec G304 -- dbv's own config path, or the file the user named
 	}
@@ -541,19 +541,22 @@ func openDB(a *app, cfg db.DBConfig) (*db.Postgres, error) {
 	return pg, err
 }
 
-func runTUI(configs []db.DBConfig, file string, first func(a *app) view) error {
+// runTUI opens the connections menu and, when open is one of configs
+// (-db, or the only one), that connection's tables over it.
+func runTUI(configs []db.DBConfig, file string, open int) error {
 	return withApp(func(a *app) error {
-		m := newDBMenu(configs, file, first)
+		m := newDBMenu(configs, file)
 		a.push(m)
-		if len(configs) != 1 {
+		if open < 0 {
 			return nil
 		}
-		err := a.connect(configs[0], 1)
+		m.menu.At = open
+		err := a.connect(configs[open], open+1)
 		if err != nil {
 			a.fail(err) // the menu stays, to fix the connection
 			return nil
 		}
-		a.push(first(a))
+		a.push(newTableList(a))
 		return nil
 	})
 }
@@ -606,7 +609,6 @@ type dbMenu struct {
 	configs []db.DBConfig
 	file    string
 	read    []byte // file as configs came from it; nil, not there
-	next    func(a *app) view
 	menu    kit.Menu
 }
 
@@ -663,7 +665,7 @@ func (m *dbMenu) key(a *app, k screen.Key) {
 		a.fail(err)
 		return
 	}
-	a.push(m.next(a))
+	a.push(newTableList(a))
 }
 
 func toConnections(a *app) {
@@ -694,7 +696,7 @@ func connectionsMenu(a *app) *dbMenu {
 	if len(configFiles) == 1 {
 		file = configFiles[0]
 	}
-	return newDBMenu(configs, file, newTableList)
+	return newDBMenu(configs, file)
 }
 
 // manage is a, e and D on the menu: the connections in m.file.

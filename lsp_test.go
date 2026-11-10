@@ -144,7 +144,8 @@ func TestLSPDatabaseFails(t *testing.T) {
 	})
 	var out bytes.Buffer
 	s.out = &out
-	_ = s.catalog("-- dbv: db=gone\n")
+	s.docs["file:///g.sql"] = "-- dbv: db=gone\n"
+	_ = s.catalog("file:///g.sql")
 	waitCatalogs(t, s)
 	s.outMu.Lock()
 	said := out.String()
@@ -152,7 +153,7 @@ func TestLSPDatabaseFails(t *testing.T) {
 	if !strings.Contains(said, "window/showMessage") || !strings.Contains(said, "SQL words only") {
 		t.Fatalf("%s", said)
 	}
-	if s.catalog("-- dbv: db=gone\n") != nil {
+	if s.catalog("file:///g.sql") != nil {
 		t.Fatal("a failed database is not tried on every keystroke")
 	}
 }
@@ -161,13 +162,39 @@ func TestLSPFromInsideDBV(t *testing.T) {
 	t.Setenv("DBV_CONFIG", "/a.filo"+string(os.PathListSeparator)+"/b.filo")
 	t.Setenv("DBV_DB", "Test")
 	s := newLSPServer(nil, "", nil)
-	files, name := s.dbFor("select 1")
+	files, name := s.dbFor("select 1", "")
 	if name != "Test" || len(files) != 2 {
 		t.Fatalf("%v %q", files, name)
 	}
-	_, name = s.dbFor("-- dbv: db=Other\nselect 1")
+	_, name = s.dbFor("-- dbv: db=Other\nselect 1", "")
 	if name != "Test" {
 		t.Fatalf("opened by dbv, dbv's connection: %q", name)
+	}
+	files, name = s.dbFor("-- dbv: db=Other\nselect 1", "Chosen")
+	if name != "Chosen" || len(files) != 2 {
+		t.Fatalf("dbv.connect wins, in dbv's files: %v %q", files, name)
+	}
+}
+
+func TestLSPConnect(t *testing.T) {
+	t.Setenv("DBV_DB", "")
+	var asked atomic.Value
+	s := newLSPServer(nil, "/cfg.filo", func(_ []string, name string) (*sqlcomplete.Catalog, error) {
+		asked.Store(name)
+		return testCatalog, nil
+	})
+	text := "-- dbv: db=Header\nselect cl.nome from clientes cl"
+	replies(t, s, didOpen("file:///c.sql", text), didOpen("file:///other.sql", "select 1"))
+	waitCatalogs(t, s)
+	connect := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "workspace/executeCommand", "params": map[string]any{"command": "dbv.connect", "arguments": []string{"file:///c.sql", "Picked"}}}
+	got := replies(t, s, connect)
+	waitCatalogs(t, s)
+	if string(got["1"]) != "null" || asked.Load() != "Picked" {
+		t.Fatalf("%s %v", got["1"], asked.Load())
+	}
+	_, name := s.dbFor(s.docs["file:///other.sql"], s.chosen["file:///other.sql"])
+	if name != "" {
+		t.Fatalf("only the file it was asked for: %q", name)
 	}
 }
 
@@ -244,7 +271,7 @@ func TestLSPHoverAndReload(t *testing.T) {
 	fail.Store(true)
 	replies(t, s, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "workspace/executeCommand", "params": map[string]any{"command": "dbv.reload"}})
 	waitCatalogs(t, s)
-	if loads.Load() != 2 || s.catalog(text) == nil {
+	if loads.Load() != 2 || s.catalog("file:///h.sql") == nil {
 		t.Fatalf("a failed reload keeps the catalog it had: loads %d", loads.Load())
 	}
 }

@@ -85,16 +85,19 @@ func runShow(argv []string) int {
 	}
 	configFiles = files
 	n := slices.Index(configs, cfg) + 1
+	v := &runView{sql: sql}
 	err = withApp(func(a *app) error {
 		err := a.connect(cfg, n)
 		if err != nil {
 			return withoutURL(err, cfg)
 		}
-		v := &runView{sql: sql}
 		a.push(v)
 		v.run(a)
 		return nil
 	})
+	if err == nil {
+		err = v.failed
+	}
 	return report("show", err)
 }
 
@@ -180,7 +183,8 @@ func onlyReads(sql string) bool {
 // runView is dbv show's first screen: the SQL it runs, under the grid of
 // what it answered.
 type runView struct {
-	sql string
+	sql    string
+	failed error // the SQL's: dbv show prints it and exits 1 once closed
 }
 
 func (v *runView) title() string { return "dbv · " + DBTitle + " · SQL" }
@@ -245,6 +249,7 @@ func (v *runView) confirm(a *app) {
 }
 
 func (v *runView) show(a *app, res []db.Statement, err error) {
+	v.failed = err
 	if err != nil {
 		a.fail(err)
 		return

@@ -2,9 +2,13 @@
 -- see its rows in dbv's grid in a split below (dbv show -h). :DBVRun runs
 -- the statement at the cursor; from visual mode (:'<,'>DBVRun) the
 -- selection, a block (Ctrl-V) too; with a range of lines, those lines. :DBVInfo says which
--- connection the buffer gets, and why, and what the server is.
--- The connection is dbv's when nvim runs inside it (DBV_DB), else the
--- file's "-- dbv: db=NAME", else the only one configured.
+-- connection the buffer gets, and why, and what the server is. :DBV opens
+-- dbv on a connection picked from a list (:DBV NAME, Tab completes).
+-- :DBVConnect picks the buffer's connection the same way, for completion
+-- (dbv lsp), :DBVRun and :DBVInfo; the file is not touched.
+-- The connection is the one :DBVConnect picked, else dbv's when nvim runs
+-- inside it (DBV_DB), else the file's "-- dbv: db=NAME", else the only one
+-- configured.
 local M = {}
 
 -- byte offset of row (from 1), col (a byte, from 0) in lines joined by \n
@@ -46,14 +50,9 @@ local function at(opts, lines)
   return offset(lines, opts.line1, 0) .. ":" .. offset(lines, opts.line2, #last)
 end
 
-function M.run(opts)
-  opts = opts or { range = 0 }
-  local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-  local cmd = { "dbv", "show", "-at", at(opts, lines) }
-  local tmp = vim.fn.tempname() .. ".sql"
-  vim.fn.writefile(lines, tmp) -- each line and a \n: the offsets above
-  table.insert(cmd, tmp)
-
+-- term runs cmd in a split below; done runs once it exits, and the split
+-- closes when it exits with 0
+local function term(cmd, done)
   vim.cmd("botright " .. math.floor(vim.o.lines / 2) .. "split")
   local win = vim.api.nvim_get_current_win()
   local buf = vim.api.nvim_create_buf(false, true)
@@ -61,7 +60,7 @@ function M.run(opts)
   local job = {
     on_exit = function(_, code)
       vim.schedule(function()
-        os.remove(tmp)
+        done()
         if code ~= 0 then
           return -- the error stays on screen; a key closes it
         end
@@ -81,6 +80,86 @@ function M.run(opts)
     vim.fn.termopen(cmd, job)
   end
   vim.cmd("startinsert")
+end
+
+function M.run(opts)
+  opts = opts or { range = 0 }
+  local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  local cmd = { "dbv", "show", "-at", at(opts, lines) }
+  if vim.b.dbv_db then
+    vim.list_extend(cmd, { "-db", vim.b.dbv_db })
+  end
+  local tmp = vim.fn.tempname() .. ".sql"
+  vim.fn.writefile(lines, tmp) -- each line and a \n: the offsets above
+  table.insert(cmd, tmp)
+  term(cmd, function() os.remove(tmp) end)
+end
+
+-- titles are the configured connections' titles, from dbv dbs
+local function titles()
+  local r = vim.system({ "dbv", "dbs", "-json" }, { text = true }):wait()
+  if r.code ~= 0 then
+    return nil, vim.trim(r.stderr or "")
+  end
+  local list = {}
+  for _, c in ipairs(vim.json.decode(r.stdout)) do
+    table.insert(list, c.title)
+  end
+  return list
+end
+
+-- pick calls use with the connection named in opts, or picked from the list
+local function pick(opts, use)
+  if opts and opts.args ~= "" then
+    use(opts.args)
+    return
+  end
+  local list, err = titles()
+  if not list then
+    vim.notify(err, vim.log.levels.ERROR)
+    return
+  end
+  vim.ui.select(list, { prompt = "dbv: connection" }, function(name)
+    if name then
+      use(name)
+    end
+  end)
+end
+
+-- M.open opens dbv on the connection named, or on one picked from the list.
+function M.open(opts)
+  pick(opts, function(name)
+    term({ "dbv", "-db", name }, function() end)
+  end)
+end
+
+-- M.connect makes the connection named, or picked, this buffer's: for dbv
+-- lsp (its dbv.connect command, through nvim's client or coc), :DBVRun and
+-- :DBVInfo.
+function M.connect(opts)
+  local buf = vim.api.nvim_get_current_buf()
+  pick(opts, function(name)
+    vim.b[buf].dbv_db = name
+    local uri = vim.uri_from_bufnr(buf)
+    local params = { command = "dbv.connect", arguments = { uri, name } }
+    local told = false
+    for _, client in ipairs(vim.lsp.get_clients({ bufnr = buf, name = "dbv" })) do
+      if vim.fn.has("nvim-0.11") == 1 then
+        client:request("workspace/executeCommand", params, nil, buf)
+      else
+        client.request("workspace/executeCommand", params, nil, buf)
+      end
+      told = true
+    end
+    if not told and vim.fn.exists("*CocActionAsync") == 1 then
+      told = pcall(vim.fn.CocActionAsync, "runCommand", "dbv.connect", uri, name)
+    end
+    local say = "dbv: " .. name .. " for this buffer"
+    if not told then
+      say = say .. " (:DBVRun, :DBVInfo; no dbv lsp attached to complete with it)"
+    end
+    vim.notify(say)
+  end)
 end
 
 -- a float with lines; q or <Esc> closes it
@@ -108,7 +187,11 @@ end
 function M.info()
   local tmp = vim.fn.tempname() .. ".sql"
   vim.fn.writefile(vim.api.nvim_buf_get_lines(0, 0, -1, false), tmp) -- the header names the database
-  vim.system({ "dbv", "info", tmp }, { text = true }, function(r)
+  local cmd = { "dbv", "info", tmp }
+  if vim.b.dbv_db then
+    cmd = { "dbv", "info", "-db", vim.b.dbv_db, tmp }
+  end
+  vim.system(cmd, { text = true }, function(r)
     vim.schedule(function()
       os.remove(tmp)
       local out = vim.split(vim.trim((r.stdout or "") .. (r.stderr or "")), "\n")
@@ -119,5 +202,10 @@ end
 
 vim.api.nvim_create_user_command("DBVRun", M.run, { range = true })
 vim.api.nvim_create_user_command("DBVInfo", M.info, {})
+local function complete(lead)
+  return vim.tbl_filter(function(t) return vim.startswith(t, lead) end, titles() or {})
+end
+vim.api.nvim_create_user_command("DBV", M.open, { nargs = "?", complete = complete })
+vim.api.nvim_create_user_command("DBVConnect", M.connect, { nargs = "?", complete = complete })
 
 return M

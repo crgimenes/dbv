@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,40 +48,6 @@ func TestMaskQueryPassword(t *testing.T) {
 		if err != nil || strings.Contains(got, "secret") {
 			t.Fatalf("%q %v", got, err)
 		}
-	}
-}
-
-func TestWriteOutputRefusesSymlink(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "precious")
-	err := os.WriteFile(target, []byte("keep"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "out")
-	err = os.Symlink(target, link)
-	if err != nil {
-		t.Skip("no symlinks here")
-	}
-	if writeOutput(link, "x") == nil {
-		t.Fatal("wrote through a symlink")
-	}
-	b, _ := os.ReadFile(target)
-	if string(b) != "keep" {
-		t.Fatalf("target changed: %q", b)
-	}
-	plain := filepath.Join(dir, "plain")
-	err = os.WriteFile(plain, []byte("old and longer"), 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if writeOutput(plain, "new") != nil {
-		t.Fatal("refused a file of mine")
-	}
-	b, _ = os.ReadFile(plain)
-	info, _ := os.Stat(plain)
-	if string(b) != "new" || info.Mode().Perm() != 0o600 {
-		t.Fatalf("%q %v", b, info.Mode())
 	}
 }
 

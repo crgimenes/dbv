@@ -28,9 +28,10 @@ import (
 //
 //	printf 'Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | dbv lsp
 //
-// The database is the one dbv is on when it opened the editor (DBV_DB, its
-// number, and DBV_CONFIG in the editor's environment), else the one a
-// comment at the top of the file names (-- dbv: db=NAME), else none.
+// The database is the one the editor chose for the file (dbv.connect),
+// else the one dbv is on when it opened the editor (DBV_DB, its number, and
+// DBV_CONFIG in the editor's environment), else the one a comment at the
+// top of the file names (-- dbv: db=NAME), else none.
 // Nothing here may stop the server; a loose .sql still gets its words.
 
 const lspUsage = `dbv lsp [-config FILE] [-debug]
@@ -45,7 +46,9 @@ on its own may name one in its first comment lines, from the config:
 
   -- dbv: db=NAME        (a title or a number, as in dbv -db)
 
-With neither, or when the database cannot be reached, SQL words only.
+The editor may choose one for a file instead, with the command dbv.connect
+(arguments: the file's URI and NAME; :DBVConnect in neovim/dbv.lua). With
+none of these, or when the database cannot be reached, SQL words only.
 
   -config FILE   config for files that name a database (default: dbv's)
   -debug         events on stderr (the editor's LSP log)
@@ -81,8 +84,9 @@ type lspServer struct {
 	outMu sync.Mutex
 	out   io.Writer
 
-	utf8 bool // positions count bytes; otherwise UTF-16 units, the default
-	docs map[string]string
+	utf8   bool // positions count bytes; otherwise UTF-16 units, the default
+	docs   map[string]string
+	chosen map[string]string // URI: the connection dbv.connect named for it
 
 	config   string // -config, for a file's own -- dbv: db=
 	envFiles []string
@@ -120,7 +124,7 @@ func runLSP(argv []string) int {
 }
 
 func newLSPServer(out io.Writer, config string, load func([]string, string) (*sqlcomplete.Catalog, error)) *lspServer {
-	s := &lspServer{out: out, config: config, docs: map[string]string{}, catalogs: map[string]*catalogState{}, load: load}
+	s := &lspServer{out: out, config: config, docs: map[string]string{}, chosen: map[string]string{}, catalogs: map[string]*catalogState{}, load: load}
 	env := os.Getenv("DBV_CONFIG")
 	if env != "" && os.Getenv("DBV_DB") != "" {
 		s.envFiles, s.envDB = filepath.SplitList(env), os.Getenv("DBV_DB")
@@ -214,7 +218,7 @@ func (s *lspServer) handle(m lspMessage) {
 		}
 		_ = json.Unmarshal(m.Params, &p)
 		s.docs[p.TextDocument.URI] = p.TextDocument.Text
-		s.catalog(p.TextDocument.Text) // read it while the user types
+		s.catalog(p.TextDocument.URI) // read it while the user types
 	case "textDocument/didChange":
 		var p struct {
 			TextDocument struct {
@@ -247,14 +251,21 @@ func (s *lspServer) handle(m lspMessage) {
 			} `json:"textDocument"`
 		}
 		_ = json.Unmarshal(m.Params, &p)
-		s.catalogFor(s.docs[p.TextDocument.URI], "save") // a table made since shows up
+		s.catalogFor(p.TextDocument.URI, "save") // a table made since shows up
 	case "workspace/executeCommand":
 		var p struct {
-			Command string `json:"command"`
+			Command   string   `json:"command"`
+			Arguments []string `json:"arguments"`
 		}
 		_ = json.Unmarshal(m.Params, &p)
-		for _, text := range s.docs {
-			s.catalogFor(text, "reload")
+		if p.Command == "dbv.connect" && len(p.Arguments) == 2 && p.Arguments[1] != "" {
+			s.chosen[p.Arguments[0]] = p.Arguments[1]
+			s.catalogFor(p.Arguments[0], "reload") // says how many tables, or why none
+			s.reply(m.ID, nil)
+			return
+		}
+		for uri := range s.docs {
+			s.catalogFor(uri, "reload")
 		}
 		s.reply(m.ID, nil)
 	default:
@@ -285,7 +296,7 @@ func (s *lspServer) initialize(params json.RawMessage) any {
 			"textDocumentSync": map[string]any{"openClose": true, "change": 1, "save": map[string]any{}}, // the whole text on each change: a scratch file is small
 			"hoverProvider":    true,
 			"executeCommandProvider": map[string]any{
-				"commands": []string{"dbv.reload"},
+				"commands": []string{"dbv.reload", "dbv.connect"},
 			},
 			"completionProvider": map[string]any{
 				"triggerCharacters": []string{"."},
@@ -307,7 +318,7 @@ func (s *lspServer) completion(params json.RawMessage) any {
 	cur := offsetAt(text, p.Position, s.utf8)
 	st, end := sqlcomplete.Statement(text, cur)
 	ctx := sqlcomplete.Analyze(text[st:end], cur-st)
-	items := sqlcomplete.Complete(s.catalog(text), ctx)
+	items := sqlcomplete.Complete(s.catalog(p.TextDocument.URI), ctx)
 
 	from := positionAt(text, st+ctx.From, s.utf8)
 	to := positionAt(text, wordEnd(text, st+ctx.From, cur), s.utf8) // the rest of the word goes too: cli|entes
@@ -342,7 +353,7 @@ func (s *lspServer) hover(params json.RawMessage) any {
 	text := s.docs[p.TextDocument.URI]
 	cur := offsetAt(text, p.Position, s.utf8)
 	st, end := sqlcomplete.Statement(text, cur)
-	say := sqlcomplete.Describe(s.catalog(text), text[st:end], cur-st)
+	say := sqlcomplete.Describe(s.catalog(p.TextDocument.URI), text[st:end], cur-st)
 	if say == "" {
 		return nil
 	}
@@ -362,10 +373,14 @@ func lspKind(k string) int {
 // dbFor is the config files and the connection name for text: dbv's own
 // connection when dbv opened the editor (its number: titles repeat), else
 // the file's -- dbv: db=, else none.
-// dbFor is the connection text gets, by dbv show's rule (showDB): the dbv
-// nvim runs under, the file's header, else the only one configured; with
-// several and no header, none.
-func (s *lspServer) dbFor(text string) ([]string, string) {
+// dbFor is the connection text gets, by dbv show's rule (showDB): the one
+// chosen for it, the dbv nvim runs under, the file's header, else the only
+// one configured; with several and no header, none.
+func (s *lspServer) dbFor(text, chosen string) ([]string, string) {
+	if chosen != "" {
+		files, _, _ := showDB(s.config, chosen, text)
+		return files, chosen
+	}
 	if len(s.envFiles) > 0 {
 		return s.envFiles, s.envDB
 	}
@@ -442,15 +457,15 @@ func headerDB(text string) string {
 
 // catalog is text's database catalog when it has been read; nil while it
 // is first being read, after that failed, or with no database at all.
-func (s *lspServer) catalog(text string) *sqlcomplete.Catalog {
-	return s.catalogFor(text, "")
+func (s *lspServer) catalog(uri string) *sqlcomplete.Catalog {
+	return s.catalogFor(uri, "")
 }
 
 // catalogFor reads the catalog again when why says so ("reload", "save");
 // until the new one comes the old one serves, and a failed read keeps it.
 // A failure is not tried again on every key, only on the next reason.
-func (s *lspServer) catalogFor(text, why string) *sqlcomplete.Catalog {
-	files, name := s.dbFor(text)
+func (s *lspServer) catalogFor(uri, why string) *sqlcomplete.Catalog {
+	files, name := s.dbFor(s.docs[uri], s.chosen[uri])
 	if files == nil {
 		return nil
 	}
