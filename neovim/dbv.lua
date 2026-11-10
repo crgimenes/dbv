@@ -3,7 +3,8 @@
 -- the statement at the cursor; from visual mode (:'<,'>DBVRun) the
 -- selection, a block (Ctrl-V) too; with a range of lines, those lines. :DBVInfo says which
 -- connection the buffer gets, and why, and what the server is. :DBV opens
--- dbv on a connection picked from a list (:DBV NAME, Tab completes).
+-- dbv on the buffer's connection, or on one picked from a list when it has
+-- none (:DBV NAME, Tab completes).
 -- :DBVConnect picks the buffer's connection the same way, for completion
 -- (dbv lsp), :DBVRun and :DBVInfo; the file is not touched.
 -- The connection is the one :DBVConnect picked, else dbv's when nvim runs
@@ -126,10 +127,74 @@ local function pick(opts, use)
   end)
 end
 
--- M.open opens dbv on the connection named, or on one picked from the list.
+-- header is the connection a "-- dbv: db=NAME" line names among the
+-- file's first comment lines, as dbv's headerDB reads it
+local function header(buf)
+  for _, line in ipairs(vim.api.nvim_buf_get_lines(buf, 0, 50, false)) do
+    line = vim.trim(line)
+    if line ~= "" then
+      local rest = line:match("^%-%-%s*(.*)$")
+      if not rest then
+        return nil
+      end
+      local name = rest:match("^dbv:.-db=(.*)$")
+      if name then
+        return vim.trim(name)
+      end
+    end
+  end
+end
+
+-- M.open opens dbv on the connection named, else the buffer's (:DBVConnect,
+-- the dbv nvim runs under, the file's header), else one picked from the
+-- list, which the only one skips.
 function M.open(opts)
-  pick(opts, function(name)
-    term({ "dbv", "-db", name }, function() end)
+  local open = function(name)
+    local cmd = { "dbv", "-db", name }
+    if (vim.env.DBV_CONFIG or "") ~= "" and (vim.env.DBV_DB or "") ~= "" then
+      vim.list_extend(cmd, vim.split(vim.env.DBV_CONFIG, ":", { plain = true })) -- the names are in dbv's files
+    end
+    term(cmd, function() end)
+  end
+  local buf = vim.api.nvim_get_current_buf()
+  local env = vim.env.DBV_DB ~= "" and vim.env.DBV_DB or nil
+  local name = opts and opts.args ~= "" and opts.args or vim.b[buf].dbv_db or env or header(buf)
+  if name then
+    open(name)
+    return
+  end
+  local list, err = titles()
+  if not list then
+    vim.notify(err, vim.log.levels.ERROR)
+    return
+  end
+  if #list == 1 then
+    open(list[1])
+    return
+  end
+  vim.ui.select(list, { prompt = "dbv: connection" }, function(picked)
+    if picked then
+      open(picked)
+    end
+  end)
+end
+
+-- coc registers dbv.connect only once dbv lsp has started, so a
+-- :DBVConnect right after opening the file retries for up to 10s
+local function coc(uri, name, tries)
+  vim.fn.CocActionAsync("runCommand", "dbv.connect", uri, name, function(err)
+    if err == nil or err == vim.NIL then
+      return
+    end
+    local missing = tostring(err):find("not found", 1, true) ~= nil
+    if missing and tries > 0 then
+      vim.defer_fn(function() coc(uri, name, tries - 1) end, 250)
+      return
+    end
+    if missing then
+      err = "dbv lsp did not start for this buffer; completion stays off (" .. tostring(err) .. ")"
+    end
+    vim.notify("dbv: " .. tostring(err), vim.log.levels.ERROR)
   end)
 end
 
@@ -152,7 +217,8 @@ function M.connect(opts)
       told = true
     end
     if not told and vim.fn.exists("*CocActionAsync") == 1 then
-      told = pcall(vim.fn.CocActionAsync, "runCommand", "dbv.connect", uri, name)
+      coc(uri, name, 40)
+      told = true
     end
     local say = "dbv: " .. name .. " for this buffer"
     if not told then
@@ -202,8 +268,17 @@ end
 
 vim.api.nvim_create_user_command("DBVRun", M.run, { range = true })
 vim.api.nvim_create_user_command("DBVInfo", M.info, {})
-local function complete(lead)
-  return vim.tbl_filter(function(t) return vim.startswith(t, lead) end, titles() or {})
+-- titles have spaces and nvim replaces only the last word (lead), so each
+-- match is what follows the words already typed
+local function complete(lead, line)
+  local typed = line:match("^%s*%S+%s+(.*)$") or ""
+  local out = {}
+  for _, t in ipairs(titles() or {}) do
+    if vim.startswith(t, typed) then
+      table.insert(out, lead .. t:sub(#typed + 1))
+    end
+  end
+  return out
 end
 vim.api.nvim_create_user_command("DBV", M.open, { nargs = "?", complete = complete })
 vim.api.nvim_create_user_command("DBVConnect", M.connect, { nargs = "?", complete = complete })

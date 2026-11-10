@@ -260,9 +260,12 @@ Load it from your config:
 require "dbv"
 ```
 
-`:DBV` lists the configured connections (`vim.ui.select`) and opens dbv on
-the one picked, in a split below; `:DBV NAME` skips the list, and `Tab`
-completes the titles. It is `dbv -db NAME`; the split closes when dbv quits.
+`:DBV` opens dbv in a split below on the buffer's connection: the one
+`:DBVConnect` picked, else the dbv nvim runs under, else the file's `-- dbv:
+db=` line. With none, it lists the configured connections
+(`vim.ui.select`; the only one opens at once); to change a buffer's
+connection, `:DBVConnect`. `:DBV NAME` opens that one, and `Tab` completes
+the titles. It is `dbv -db NAME`; the split closes when dbv quits.
 
 `:DBVConnect` picks the buffer's connection the same way (`:DBVConnect NAME`,
 `Tab` completes) without opening dbv and without touching the file: `dbv
