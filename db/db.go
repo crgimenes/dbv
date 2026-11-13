@@ -262,9 +262,10 @@ func (pg *Postgres) startTunnel(t tunnelTarget) error {
 		return err
 	}
 	c, chans, reqs, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
-		User:            t.user,
-		Auth:            []ssh.AuthMethod{auth},
-		HostKeyCallback: hostKeyCallback,
+		User:              t.user,
+		Auth:              []ssh.AuthMethod{auth},
+		HostKeyCallback:   hostKeyCallback,
+		HostKeyAlgorithms: knownHostAlgorithms(hostKeyCallback, addr),
 	})
 	if err != nil {
 		_ = conn.Close()
