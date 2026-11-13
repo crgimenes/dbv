@@ -240,14 +240,11 @@ func (t *tunnelTarget) fromSSHConfig(alias string) error {
 const sshHandshakeWait = 15 * time.Second
 
 func (pg *Postgres) startTunnel(t tunnelTarget) error {
-	key, err := os.ReadFile(filepath.Clean(t.key))
+	auth, closeAgent, err := agentAuth(t.key)
 	if err != nil {
-		return fmt.Errorf("failed to read SSH key: %w", err)
+		return fmt.Errorf("SSH auth: %w", err)
 	}
-	signer, err := ssh.ParsePrivateKey(key)
-	if err != nil {
-		return fmt.Errorf("failed to parse SSH key: %w", err)
-	}
+	defer closeAgent()
 	hostKeyCallback, err := knownhosts.New(os.ExpandEnv("$HOME/.ssh/known_hosts"))
 	if err != nil {
 		return fmt.Errorf("failed to create host key callback: %w", err)
@@ -266,7 +263,7 @@ func (pg *Postgres) startTunnel(t tunnelTarget) error {
 	}
 	c, chans, reqs, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
 		User:            t.user,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		Auth:            []ssh.AuthMethod{auth},
 		HostKeyCallback: hostKeyCallback,
 	})
 	if err != nil {
