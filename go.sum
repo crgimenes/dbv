@@ -1,7 +1,7 @@
 filippo.io/edwards25519 v1.1.0 h1:FNf4tywRC1HmFuKW5xopWpigGjJKiJSV0Cqo0cJWDaA=
 filippo.io/edwards25519 v1.1.0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4VDT4=
-github.com/crgimenes/filo v0.1.3 h1:4R6Rbc7zQxsyAROlRev/VDYhE5anAfkZ+ezZhOij0lA=
-github.com/crgimenes/filo v0.1.3/go.mod h1:at6YbdrYygETZYeRNlqb5MwDHudvAnCHRIlMnfhaM14=
+github.com/crgimenes/filo v0.1.4 h1:/v+6qTs3i48z5sQWAdvVvJWdQQTb3NwVWMNIX9ther8=
+github.com/crgimenes/filo v0.1.4/go.mod h1:at6YbdrYygETZYeRNlqb5MwDHudvAnCHRIlMnfhaM14=
 github.com/crgimenes/filo-term-go v0.0.5 h1:naJ4CGM6KtHHG1Mbe50un6JRBZomciie5UPL2+Biq+U=
 github.com/crgimenes/filo-term-go v0.0.5/go.mod h1:aBGfTYRGwwEHWsgUFdrENmNIdyHyfEkLbsi6Iu5QDHY=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
