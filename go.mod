@@ -3,7 +3,7 @@ module github.com/crgimenes/dbv
 go 1.27.4
 
 require (
-	github.com/crgimenes/filo v0.1.4
+	github.com/crgimenes/filo v0.1.5
 	github.com/crgimenes/filo-term-go v0.0.5
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/jmoiron/sqlx v1.4.0
