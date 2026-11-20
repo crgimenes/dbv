@@ -9,7 +9,7 @@ BUILD_FLAGS := -trimpath -ldflags "-X 'main.GitTag=$(GIT_TAG)' -s -w -extldflags
 all: build
 
 build:
-	go build $(BUILD_FLAGS) -o $(BINARY_NAME) .
+	go build $(BUILD_FLAGS) -o $(BINARY_NAME) ./cmd/dbv
 
 clean:
 	rm -f $(BINARY_NAME) $(BINARY_NAME)-*

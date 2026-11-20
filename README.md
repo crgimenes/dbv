@@ -36,7 +36,7 @@
    ```
 2. Build the binary:
    ```bash
-   go build -o dbv
+   go build -o dbv ./cmd/dbv
    ```
 3. Move the binary to a directory in your PATH (for example, `/usr/local/bin`):
    ```bash
@@ -293,7 +293,7 @@ first. The cursor just past a `;` runs that statement, as in DBeaver.
 ```bash
 git clone https://github.com/crgimenes/dbv.git
 cd dbv
-go build -o dbv
+go build -o dbv ./cmd/dbv
 mv dbv /usr/local/bin/
 mkdir -p ~/.config/dbv    # macOS: ~/Library/Application\ Support/dbv
 cat <<EOF > ~/.config/dbv/init.filo
